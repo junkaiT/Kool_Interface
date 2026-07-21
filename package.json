@@ -1,5 +1,8 @@
 {
   "name": "kool-crm",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  }
 }

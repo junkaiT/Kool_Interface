@@ -9,6 +9,8 @@
  * WHATSAPP_VERIFY_TOKEN: paste this value into Meta's developer console once.
  */
 
+import * as db from './db.js';
+
 // ── Config ───────────────────────────────────────────────────────────────
 
 export const PHONE_NUMBER_ID = "1148898708312929";
@@ -83,6 +85,14 @@ export async function sendWhatsApp(to, text) {
   }
 
   console.log("[whatsapp] Message sent:", JSON.stringify(json));
+  await db.insert({
+    conversation_id: String(to),
+    channel: 'whatsapp',
+    direction: 'outbound',
+    message_type: 'bot-resp',
+    text,
+    sender: 'operator',
+  }).catch(e => console.error('[whatsapp] db log failed:', e.message));
   return json;
 }
 
@@ -179,6 +189,14 @@ export async function sendWhatsAppTemplate(to, waTemplateName, params = {}, head
     throw new Error(`[whatsapp] sendWhatsAppTemplate failed: ${JSON.stringify(data)}`);
   }
   console.log(`[whatsapp] Template sent: ${waTemplateName} → ${to} (msg: ${data.messages?.[0]?.id})`);
+  await db.insert({
+    conversation_id: String(to),
+    channel: 'whatsapp',
+    direction: 'outbound',
+    message_type: 'bot-resp',
+    text: `[template:${waTemplateName}]`,
+    sender: 'operator',
+  }).catch(e => console.error('[whatsapp] db log failed:', e.message));
   return data;
 }
 
@@ -228,6 +246,14 @@ export async function sendWhatsAppMedia(to, mediaType, mediaId, caption = '') {
     throw new Error(`[whatsapp] sendWhatsAppMedia failed: ${JSON.stringify(data)}`);
   }
   console.log(`[whatsapp] Media sent: ${mediaType} → ${to} (msg: ${data.messages?.[0]?.id})`);
+  await db.insert({
+    conversation_id: String(to),
+    channel: 'whatsapp',
+    direction: 'outbound',
+    message_type: 'bot-resp',
+    text: `[${mediaType}] ${caption}`,
+    sender: 'operator',
+  }).catch(e => console.error('[whatsapp] db log failed:', e.message));
   return data;
 }
 
@@ -304,6 +330,14 @@ export async function sendWhatsAppInteractive(to, bodyText, buttons, headerText 
     throw new Error(`[whatsapp] sendWhatsAppInteractive failed: ${JSON.stringify(data)}`);
   }
   console.log(`[whatsapp] Interactive sent → ${to} (msg: ${data.messages?.[0]?.id})`);
+  await db.insert({
+    conversation_id: String(to),
+    channel: 'whatsapp',
+    direction: 'outbound',
+    message_type: 'bot-resp',
+    text: bodyText,
+    sender: 'operator',
+  }).catch(e => console.error('[whatsapp] db log failed:', e.message));
   return data;
 }
 

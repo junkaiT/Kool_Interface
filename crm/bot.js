@@ -13,6 +13,8 @@
  * keep those imports unchanged.
  */
 
+import * as db from './db.js';
+
 // ── Startup credential validation ─────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -56,6 +58,16 @@ export async function sendTelegram(chatId, text) {
  if (!data.ok) {
  console.error('[bot] Telegram error:', data);
  throw new Error(`Telegram API error: ${data.description}`);
+ }
+ if (String(chatId) !== OPERATOR_TELEGRAM_ID) {
+ await db.insert({
+ conversation_id: String(chatId),
+ channel: 'telegram',
+ direction: 'outbound',
+ message_type: 'bot-resp',
+ text,
+ sender: 'operator',
+ }).catch(e => console.error('[bot] db log failed:', e.message));
  }
  return data;
 }

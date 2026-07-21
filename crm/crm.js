@@ -57,6 +57,7 @@ import {
 import { sendWhatsApp } from './whatsapp.js';
 import { normalizeInboxId } from './booking.js';
 import { sendPhotoBundleToCustomer } from './reports.js';
+import * as db from './db.js';
 
 // ─── Local helpers ────────────────────────────────────────────────────────────
 
@@ -204,6 +205,15 @@ export async function handleInboundMessage(msg) {
  Sent_By: contact.Full_Name || contactId,
  Status: 'Received',
  });
+
+ await db.insert({
+ conversation_id: String(contactId),
+ channel: channel.toLowerCase(),
+ direction: 'inbound',
+ message_type: 'direct',
+ text,
+ sender: String(contactId),
+ }).catch(e => console.error('[crm] db log failed:', e.message));
 
 
   // ── Check if this is a YES reply to POST-D0-UTIL photo bundle offer ───────
