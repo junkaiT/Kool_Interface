@@ -67,7 +67,7 @@ function sgtDateAtMinutes(dateStr, mins) {
  return new Date(`${dateStr}T${hh}:${mm}:00+08:00`);
 }
 
-// ─── Booking intent detection ────────────────────────────────────────────────
+// ─── Booking intent detection ─────────────────────────────────────────────────
 
 const BOOKING_KEYWORDS = [
  'book', 'schedule', 'available', 'availability',
@@ -92,7 +92,7 @@ function parseContactInfo(text) {
 }
 
 
-// ─── YES reply detection ─────────────────────────────────────────────────────
+// ─── YES reply detection ──────────────────────────────────────────────────────
 
 const YES_PATTERNS = [
   /^yes$/i, /^ok$/i, /^okay$/i, /^sure$/i, /^send$/i,

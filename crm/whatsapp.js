@@ -11,14 +11,14 @@
 
 import * as db from './db.js';
 
-// ── Config ───────────────────────────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────────────────────
 
 export const PHONE_NUMBER_ID = "1148898708312929";
 export const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
 export const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
-export const WHATSAPP_OPERATOR_NUMBER = process.env.WHATSAPP_OPERATOR_NUMBER;
+export const WHATSAPP_OPERATOR_NUMBER = ''; // Operator commands via Telegram only
 // ── Startup credential validation ─────────────────────────────────────────────
 if (!WHATSAPP_ACCESS_TOKEN) {
  throw new Error('[whatsapp] FATAL: WHATSAPP_ACCESS_TOKEN env var is not set. Add it to the supervisord environment= line and restart.');
@@ -26,12 +26,9 @@ if (!WHATSAPP_ACCESS_TOKEN) {
 if (!WHATSAPP_VERIFY_TOKEN) {
  throw new Error('[whatsapp] FATAL: WHATSAPP_VERIFY_TOKEN env var is not set. Add it to the supervisord environment= line and restart.');
 }
-if (!WHATSAPP_OPERATOR_NUMBER) {
- throw new Error('[whatsapp] FATAL: WHATSAPP_OPERATOR_NUMBER env var is not set. Add it to the supervisord environment= line and restart.');
-}
 
 
-// ── sendWhatsApp ─────────────────────────────────────────────────────────────
+// ── sendWhatsApp ──────────────────────────────────────────────────────────────
 
 /**
  * Send a plain-text WhatsApp message via the Cloud API.
@@ -45,7 +42,7 @@ export async function sendWhatsApp(to, text) {
     throw new Error("[whatsapp] WHATSAPP_ACCESS_TOKEN is not set — cannot send message.");
   }
 
-  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v23.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
   const body = JSON.stringify({
     messaging_product: "whatsapp",
     recipient_type: "individual",
@@ -391,5 +388,5 @@ export async function registerWhatsAppTemplate(waTemplateName, bodyText) {
 }
 
 // ─── Fallback phone number ID constant ───────────────────────────────────────
-const WHATSAPP_PHONE_NUMBER_ID = '1148898708312929';
+const WHATSAPP_PHONE_NUMBER_ID = '1261834007009399';
 

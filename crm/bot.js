@@ -15,7 +15,7 @@
 
 import * as db from './db.js';
 
-// ── Startup credential validation ─────────────────────────────────────────────
+// ── Startup credential validation ──────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
  throw new Error('[bot] FATAL: BOT_TOKEN env var is not set. Add it to the supervisord environment= line and restart.');
@@ -242,6 +242,7 @@ export {
 export {
  runDailyReminderSweep,
  detectAndMarkCompletedJobs,
+ pollTechnicianSubmissions,
 } from './module3.js';
 
 // handleBookingInfo — utility used by index.js directly
