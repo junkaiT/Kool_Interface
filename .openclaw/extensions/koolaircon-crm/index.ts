@@ -21,7 +21,8 @@
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById } from "../../../crm/sheets.js";
+import * as db from "../../../crm/db.js";
 import { pollTechnicianSubmissions } from "../../../crm/module3.js";
 import { handleSendPhotosCommand, isPhotoYesReply } from "../../../crm/crm.js";
 import { broadcastToUI } from "../../../crm/broadcast.js";
@@ -67,11 +68,47 @@ function normalizeApprovalText(text: string): string {
 let syncInFlight = false;
 let sweepRanToday = ''; // tracks the date the sweep last ran in-process
 
+// Resolves a command result's inboxId/contactId to the customer's channel-native
+// id (Telegram chat id or WhatsApp number) so command-result rows land in the
+// same messages.db thread as everything else for that customer — matching the
+// conversation_id convention every other db.insert() call site already uses
+// (see db.js's header comment). Falls back to the raw id string only if no
+// contact record resolves, so nothing is silently dropped.
+async function persistCommandResult(result: any) {
+  if (!result || typeof result.text !== "string") return;
+  const rawId = result.contactId || result.inboxId;
+  if (!rawId) return;
+  try {
+    const contacts = await getContacts();
+    let contact: any = null;
+    if (result.contactId) {
+      contact = contacts.find((c: any) => c.Contact_ID === result.contactId);
+    } else if (result.inboxId) {
+      const inboxRow = await findInboxById(result.inboxId);
+      if (inboxRow) contact = contacts.find((c: any) => c.Contact_ID === inboxRow.row.Contact_ID);
+    }
+    const conversationId = contact?.Channel_Contact_ID || rawId;
+    const channel = (contact?.Source || "").includes("WhatsApp") ? "whatsapp" : "telegram";
+    await db.insert({
+      conversation_id: String(conversationId),
+      channel,
+      direction: "outbound",
+      message_type: "bot-resp",
+      text: result.text,
+      sender: "operator",
+    });
+  } catch (e) {
+    console.error("[index] command-result db log failed:", e instanceof Error ? e.message : String(e));
+  }
+}
+
 // Wraps api.registerCommand so every command's { text } reply also reaches the
-// browser UI via broadcastToUI — Phase 2's notifyFn threading covers the
-// handlers that message the operator directly (handleBookingCommand,
-// handleConfirmSlot); this covers the rest, whose replies flow back through
-// the command framework's own return-value mechanism instead (e.g. /calinfo).
+// browser UI via broadcastToUI, and is persisted to messages.db (long-poll's
+// only data source until Phase 3b's WebSocket exists) — Phase 2's notifyFn
+// threading covers the handlers that message the operator directly
+// (handleBookingCommand, handleConfirmSlot); this covers the rest, whose
+// replies flow back through the command framework's own return-value
+// mechanism instead (e.g. /calinfo).
 function registerUICommand(api: any, config: any) {
   const originalHandler = config.handler;
   api.registerCommand({
@@ -80,6 +117,9 @@ function registerUICommand(api: any, config: any) {
       const result = await originalHandler(...args);
       if (result && typeof result.text === "string") {
         broadcastToUI({ type: "command-result", text: result.text, timestamp: Date.now() });
+        persistCommandResult(result).catch((e: unknown) =>
+          console.error("[index] persistCommandResult failed:", e instanceof Error ? e.message : String(e))
+        );
       }
       return result;
     },
@@ -915,7 +955,174 @@ export default definePluginEntry({
       },
     });
 
-    // Pull manually-created // Pull manually-created or bot-confirmed events from Google Calendar and
+    // ── KoolAircon CRM web interface (Phase 3 — long-poll, no WebSocket yet) ───
+    // UI_PASSWORD is a single shared password (env var, set via supervisord
+    // environment=). No user accounts — checked against every request below.
+    // Note on dynamic segments: /booking/slots and /webhook/whatsapp are the
+    // only proven registerHttpRoute patterns available (a literal path with
+    // match: 'exact', dynamic values taken from the query string) — there's
+    // no confirmed :param/prefix-matching support, so routes that the spec
+    // describes as e.g. /api/messages/:contactId are registered here as
+    // /api/messages?contactId=... instead, deliberately avoiding the same
+    // class of unverified-framework-behavior risk the WebSocket probe just
+    // caught. These are stubs; Phase 4/5 fill in real logic.
+    function requireUIAuth(req: any, res: any): boolean {
+      const UI_PASSWORD = process.env.UI_PASSWORD;
+      const sendUnauthorized = () => {
+        res.writeHead(401, {
+          'Content-Type': 'application/json',
+          'WWW-Authenticate': 'Basic realm="KoolAircon CRM"',
+        });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+      };
+      if (!UI_PASSWORD) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'UI_PASSWORD not configured on server' }));
+        return false;
+      }
+      const authHeader = String(req.headers['authorization'] || '');
+      const match = authHeader.match(/^Basic\s+(.+)$/);
+      let password = '';
+      if (match) {
+        try {
+          const decoded = Buffer.from(match[1], 'base64').toString('utf8');
+          password = decoded.slice(decoded.indexOf(':') + 1);
+        } catch { /* malformed header — password stays empty, falls through to 401 */ }
+      }
+      if (password !== UI_PASSWORD) {
+        sendUnauthorized();
+        return false;
+      }
+      return true;
+    }
+
+    function sendUIJson(res: any, statusCode: number, data: any) {
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    }
+
+    // ── GET /ui — placeholder page (real interface is Phase 4) ────────────────
+    api.registerHttpRoute({
+      path: '/ui',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<!doctype html><html><body><p>KoolAircon CRM — interface coming in Phase 4.</p></body></html>');
+        return true;
+      },
+    });
+
+    // ── GET /api/updates?since=<timestamp> — long-poll endpoint ────────────────
+    api.registerHttpRoute({
+      path: '/api/updates',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        try {
+          const urlObj = new URL(req.url, 'http://localhost');
+          const since = parseInt(urlObj.searchParams.get('since') || '0', 10) || 0;
+          const messages = await db.getMessagesSince(since);
+          sendUIJson(res, 200, { messages, now: Date.now() });
+        } catch (err) {
+          api.logger.error('[ui] /api/updates error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 500, { error: 'Failed to fetch updates.' });
+        }
+        return true;
+      },
+    });
+
+    // ── GET /api/threads — stub, real data in Phase 4 ──────────────────────────
+    api.registerHttpRoute({
+      path: '/api/threads',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        sendUIJson(res, 200, { ok: true, threads: [] });
+        return true;
+      },
+    });
+
+    // ── GET /api/messages?contactId=... — stub, real data in Phase 4 ──────────
+    api.registerHttpRoute({
+      path: '/api/messages',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        const urlObj = new URL(req.url, 'http://localhost');
+        const contactId = urlObj.searchParams.get('contactId') || '';
+        sendUIJson(res, 200, { ok: true, contactId, messages: [] });
+        return true;
+      },
+    });
+
+    // ── GET /api/customer?contactId=... — stub, real data in Phase 4/5 ────────
+    api.registerHttpRoute({
+      path: '/api/customer',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        const urlObj = new URL(req.url, 'http://localhost');
+        const contactId = urlObj.searchParams.get('contactId') || '';
+        sendUIJson(res, 200, { ok: true, contactId, customer: null });
+        return true;
+      },
+    });
+
+    // ── GET /api/queue — stub, real data in Phase 7 ────────────────────────────
+    api.registerHttpRoute({
+      path: '/api/queue',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        sendUIJson(res, 200, { ok: true, queue: [] });
+        return true;
+      },
+    });
+
+    // ── GET /api/calendar?date=YYYY-MM-DD — stub, real data in Phase 4 ─────────
+    api.registerHttpRoute({
+      path: '/api/calendar',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        const urlObj = new URL(req.url, 'http://localhost');
+        const date = urlObj.searchParams.get('date') || '';
+        sendUIJson(res, 200, { ok: true, date, events: [] });
+        return true;
+      },
+    });
+
+    // ── POST /api/send — stub, real Path A send logic in Phase 5 ───────────────
+    api.registerHttpRoute({
+      path: '/api/send',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        if (req.method !== 'POST') {
+          sendUIJson(res, 405, { error: 'Method not allowed' });
+          return true;
+        }
+        let rawBody = '';
+        await new Promise<void>((resolve, reject) => {
+          req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+          req.on('end', () => resolve());
+          req.on('error', reject);
+        });
+        sendUIJson(res, 200, { ok: true, received: rawBody.length > 0 });
+        return true;
+      },
+    });
+
+    // Pull manually-created or bot-confirmed events from Google Calendar and
     // create Job rows in 2_Jobs for any that don't already have one.
     const SYNC_INTERVAL_MS = 15 * 60 * 1000;
     const runSync = async () => {

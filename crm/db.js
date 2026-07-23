@@ -112,6 +112,23 @@ export async function getMessagesByConversation(conversationId, { limit = 200 } 
 }
 
 /**
+ * All messages logged after a given timestamp, oldest first. Backs the
+ * Phase 3 long-poll endpoint (GET /api/updates?since=) — the browser passes
+ * back the server-supplied "now" from its previous poll as the next "since".
+ */
+export async function getMessagesSince(since) {
+  const db = await getDb();
+  const stmt = db.prepare(
+    'SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp ASC'
+  );
+  stmt.bind([since]);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+/**
  * Count of unread inbound messages for a conversation.
  */
 export async function getUnreadCount(conversationId) {
