@@ -61,8 +61,35 @@ import {
 } from './bot.js';
 
 import { sendWhatsApp } from './whatsapp.js';
+import * as db from './db.js';
+import { broadcastToUI } from './broadcast.js';
 
 // ─── Local helpers ────────────────────────────────────────────────────────────
+
+function customerChannelFor(contact) {
+ return (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+}
+
+// Wraps a notifyFn (or the default operator Telegram send) so every operator
+// notification also reaches the browser UI (broadcastToUI) and gets logged to
+// SQLite as a bot-resp row, without repeating that logic at every call site.
+function makeNotify(notifyFn, contact, inboxId) {
+ const send = notifyFn ?? ((text) => sendTelegram(OPERATOR_TELEGRAM_ID, text));
+ return async (text) => {
+ await send(text);
+ broadcastToUI({ type: 'bot-resp', inboxId, contactId: contact?.Contact_ID, channel: customerChannelFor(contact), text, timestamp: Date.now() });
+ if (contact?.Channel_Contact_ID) {
+ await db.insert({
+ conversation_id: String(contact.Channel_Contact_ID),
+ channel: customerChannelFor(contact),
+ direction: 'outbound',
+ message_type: 'bot-resp',
+ text,
+ sender: 'operator',
+ }).catch(e => console.error('[booking] db log failed:', e.message));
+ }
+ };
+}
 
 export function normalizeInboxId(raw) {
  if (!raw) return null;
@@ -211,7 +238,7 @@ async function _presentSlots({ inboxId, pending, candidateSlots, serviceType, un
 
 // ─── handleBookingCommand (/b) ────────────────────────────────────────────────
 
-export async function handleBookingCommand(args) {
+export async function handleBookingCommand(args, { notifyFn } = {}) {
  const { inboxId: requestedInboxId, serviceType, units, contactId: requestedContactId } = args;
 
  if (requestedContactId) {
@@ -240,7 +267,7 @@ export async function handleBookingCommand(args) {
  customerMessage: placeholderMsg,
  timestamp: new Date().toISOString(),
  });
- return handleBookingCommand({ inboxId: newInboxId, serviceType, units });
+ return handleBookingCommand({ inboxId: newInboxId, serviceType, units }, { notifyFn });
  }
 
  const inboxId = normalizeInboxId(requestedInboxId);
@@ -268,10 +295,11 @@ export async function handleBookingCommand(args) {
  const freshContact = freshContacts.find(c => c.Contact_ID === pending.contact.Contact_ID);
  if (freshContact) Object.assign(pending.contact, freshContact);
 
+ const notify = makeNotify(notifyFn, pending.contact, inboxId);
+
  const postalCode = pending.contact.Postal_Code;
  if (!postalCode || postalCode.length < 6) {
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await notify(
  `⚠️ <b>${inboxId}</b> — No postal code saved for ${pending.contact.Full_Name}.\n\n` +
  `Run: <code>/info ${inboxId} &lt;address&gt; | &lt;postal&gt; | &lt;phone&gt;</code> first.`
  );
@@ -286,8 +314,7 @@ export async function handleBookingCommand(args) {
  const activeTeams = allTeams.filter(t => t.Active?.toUpperCase() === 'TRUE' && t.Calendar_ID?.trim());
 
  if (activeTeams.length === 0) {
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await notify(
  `⚠️ <b>No active teams configured — booking held for ${inboxId}</b>\n\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Zone: ${zone.Zone_ID} | Postal: ${postalCode}\n\n` +
@@ -300,8 +327,7 @@ export async function handleBookingCommand(args) {
  if (assignedTeamId) {
  const teamStillActive = activeTeams.some(t => (t.Team_ID || '').trim() === assignedTeamId.trim());
  if (!teamStillActive) {
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await notify(
  `⚠️ <b>Assigned team inactive — booking held for ${inboxId}</b>\n\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Assigned team: <b>${assignedTeamId}</b> is not in the active team list.\n` +
@@ -316,8 +342,7 @@ export async function handleBookingCommand(args) {
 
  if (candidateSlots.length > 0 && candidateSlots[0]._operatorFlag) {
  const flag = candidateSlots[0];
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await notify(
  `⚠️ <b>${inboxId} — Manual scheduling required</b>\n\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Service: ${serviceType} × ${units} units = ${serviceMins} mins\n` +
@@ -329,7 +354,7 @@ export async function handleBookingCommand(args) {
  }
 
  if (candidateSlots.length === 0) {
- await sendTelegram(OPERATOR_TELEGRAM_ID, `⚠️ <b>${inboxId}</b> — No available slots for ${pending.contact.Full_Name} in zone ${zone.Zone_ID}.`);
+ await notify(`⚠️ <b>${inboxId}</b> — No available slots for ${pending.contact.Full_Name} in zone ${zone.Zone_ID}.`);
  return { success: false, reason: 'no_slots', message: 'No available slots found.' };
  }
 
@@ -362,8 +387,7 @@ export async function handleBookingCommand(args) {
  pending.bookingContext = null;
  pendingApprovals.set(inboxId, pending);
 
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await notify(
  `📅 <b>${inboxId} — repeat customer, soonest home-team slot is ${firstSlotDate}</b>\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Home team: ${assignedTeam} | Zone: ${zone.Zone_ID}\n\n` +
@@ -379,8 +403,7 @@ export async function handleBookingCommand(args) {
  }
  }
 
- const replyToOperator = (text) => sendTelegram(OPERATOR_TELEGRAM_ID, text);
- return _presentSlots({ inboxId, pending, candidateSlots, serviceType, units, serviceMins, postalCode, zoneId: zone.Zone_ID, replyToOperator });
+ return _presentSlots({ inboxId, pending, candidateSlots, serviceType, units, serviceMins, postalCode, zoneId: zone.Zone_ID, replyToOperator: notify });
 }
 
 // ─── handleMixNo (/mixno) ─────────────────────────────────────────────────────
@@ -429,7 +452,7 @@ export async function handleMixYes(inboxId) {
 
 // ─── handleConfirmSlot (/confirm) ────────────────────────────────────────────
 
-export async function handleConfirmSlot(args) {
+export async function handleConfirmSlot(args, { notifyFn } = {}) {
  const { inboxId: requestedInboxId, choice, placement } = args;
  const inboxId = normalizeInboxId(requestedInboxId);
  if (!inboxId) return { success: false, message: '⚠️ Inbox ID required. Usage: /confirm INBOX-001 2 [@ HH:MM]' };
@@ -451,8 +474,7 @@ export async function handleConfirmSlot(args) {
  } catch (e) { /* could not parse */ }
 
  if (!bookingContext) {
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await makeNotify(notifyFn, contact, inboxId)(
  `⚠️ <b>${inboxId} — booking context lost (plugin restart)</b>\n` +
  `Contact: ${contact.Full_Name} (${contact.Contact_ID})\n\n` +
  `Please re-run to regenerate slots:\n` +
@@ -583,8 +605,7 @@ export async function handleConfirmSlot(args) {
  pendingApprovals.set(inboxId, pending);
 
  const timeChangeLine = timeChanged ? `⚠️ <b>Time changed</b> from original offer.\n` : '';
- await sendTelegram(
- OPERATOR_TELEGRAM_ID,
+ await makeNotify(notifyFn, pending.contact, inboxId)(
  `🧾 <b>${inboxId} — ready to confirm booking</b>\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Slot: Option ${optionIdx} — ${slotDesc}\n` +

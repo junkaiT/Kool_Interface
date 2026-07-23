@@ -269,7 +269,7 @@ When the compose box sends a /command, the browser prepends the INBOX ID before 
   
 ### 9.1 SQLite database  
 File: `/home/ubuntu/.openclaw/workspace/crm/messages.db`   
-Library: `better-sqlite3` (synchronous, no async complexity, perfect for single-operator use)   
+Library: `sql.js` (WASM) — not `better-sqlite3` as originally spec'd; `better-sqlite3` needs node-gyp/a C++ toolchain that wasn't reliably available in the deployment environment, so Phase 1 shipped on the pure-JS `sql.js` fallback behind the same `db.js` function signatures instead.   
 No separate process — accessed directly by both bot.js and the web server.  
   
 ### 9.2 Web server (added to index.ts)  
@@ -366,10 +366,15 @@ Bot token: in crm/bot.js (BOT_TOKEN)
 WhatsApp access token: in crm/whatsapp.js (permanent system-user token)  
   
 Source files (read from Shared Drive before starting):  
-- crm/bot.js (2,723 lines)  
+- crm/bot.js (251 lines) — as of v3 (17 Jul 2026), split into domain files below; this is no longer the monolith
+- crm/crm.js (989 lines)  
+- crm/booking.js  
+- crm/module3.js  
+- crm/reports.js  
+- crm/templates.js  
 - crm/scheduler.js (602 lines)  
 - crm/sheets.js (770 lines)  
 - crm/calendar.js (238 lines)  
-- crm/whatsapp.js (81 lines)  
+- crm/whatsapp.js (361 lines)  
 - .openclaw/extensions/koolaircon-crm/index.ts (820 lines)  
 ```

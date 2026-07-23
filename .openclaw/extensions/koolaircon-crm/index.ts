@@ -24,6 +24,7 @@ import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from ".
 import { getSettings, purgeOperatorInbox } from "../../../crm/sheets.js";
 import { pollTechnicianSubmissions } from "../../../crm/module3.js";
 import { handleSendPhotosCommand, isPhotoYesReply } from "../../../crm/crm.js";
+import { broadcastToUI } from "../../../crm/broadcast.js";
 import {
   handleInboundMessage,
   handleOperatorApproval,
@@ -66,6 +67,25 @@ function normalizeApprovalText(text: string): string {
 let syncInFlight = false;
 let sweepRanToday = ''; // tracks the date the sweep last ran in-process
 
+// Wraps api.registerCommand so every command's { text } reply also reaches the
+// browser UI via broadcastToUI — Phase 2's notifyFn threading covers the
+// handlers that message the operator directly (handleBookingCommand,
+// handleConfirmSlot); this covers the rest, whose replies flow back through
+// the command framework's own return-value mechanism instead (e.g. /calinfo).
+function registerUICommand(api: any, config: any) {
+  const originalHandler = config.handler;
+  api.registerCommand({
+    ...config,
+    handler: async (...args: any[]) => {
+      const result = await originalHandler(...args);
+      if (result && typeof result.text === "string") {
+        broadcastToUI({ type: "command-result", text: result.text, timestamp: Date.now() });
+      }
+      return result;
+    },
+  });
+}
+
 export default definePluginEntry({
   id: "koolaircon-crm",
   name: "KoolAircon CRM",
@@ -75,7 +95,7 @@ export default definePluginEntry({
     api.logger.info("KoolAircon CRM plugin registered");
 
     // ── /info INBOX-001 123 Main St #05-10 | 410123 | 91234567 ───────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "info",
       description: "Save customer address, postal code, phone. Usage: /info INBOX-001 123 Main St #05-10 | 410123 | 91234567",
       acceptsArgs: true,
@@ -157,7 +177,7 @@ export default definePluginEntry({
     });
 
     // ── /confirm INBOX-001 2 ──────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "confirm",
       description: "Confirm slot. Usage: /confirm INBOX-001 2  |  /confirm INBOX-001 2 @ 14:30  |  /confirm INBOX-001 2 @ 15:15-16:15",
       acceptsArgs: true,
@@ -211,7 +231,7 @@ export default definePluginEntry({
     });
 
     // ── /confirmb INBOX-003 (calendar-driven override) ─────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "confirmb",
       description:
         "Confirm a booking from a Google Calendar event (manual or bot-created). Usage: /confirmb INBOX-003",
@@ -250,7 +270,7 @@ export default definePluginEntry({
     });
 
     // ── /b INBOX-001 GC 3 ─────────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "b",
       description: "Generate 3 booking slots. Usage: /b INBOX-001 GC 3 (postal pulled from saved contact info)",
       acceptsArgs: true,
@@ -304,7 +324,7 @@ export default definePluginEntry({
     });
 
     // ── /in INBOX-001 [custom text] ───────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "in",
       description: "Approve a pending inbox item. Usage: /in INBOX-001  OR  /in INBOX-001 your custom reply",
       acceptsArgs: true,
@@ -328,7 +348,7 @@ export default definePluginEntry({
     });
 
     // ── /asCustomer <message> ─────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "checkCal",
       description: "Scan Google Calendar for manually-created events with a Contact_ID but no job yet.",
       acceptsArgs: false,
@@ -363,7 +383,7 @@ export default definePluginEntry({
     });
 
     // ── /calinfo INBOX-006 CW 3 ───────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "calinfo",
       description: "Set service type and units for a manual calendar booking. Usage: /calinfo INBOX-006 CW 3",
       acceptsArgs: true,
@@ -414,7 +434,7 @@ export default definePluginEntry({
     });
 
     // ── /asCustomer <message> ─────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "asCustomer",
       description: "Self-test: simulate an inbound customer message. Usage: /asCustomer [<name>] <message>",
       acceptsArgs: true,
@@ -485,7 +505,7 @@ export default definePluginEntry({
     });
 
     // ── /mixyes INBOX-005 ──────────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "mixyes",
       description: "Repeat customer open to another team. Re-runs slot search across all teams. Usage: /mixyes INBOX-005",
       acceptsArgs: true,
@@ -517,7 +537,7 @@ export default definePluginEntry({
     });
 
     // ── /mixno INBOX-005 ───────────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: "mixno",
       description: "Repeat customer wants home team only. Re-runs slot search with home-team filter, shows results regardless of date. Usage: /mixno INBOX-005",
       acceptsArgs: true,
@@ -989,7 +1009,7 @@ export default definePluginEntry({
     // Unref so the timer doesn't keep the process alive on shutdown.
     if (syncTimer && typeof syncTimer.unref === 'function') syncTimer.unref();
     // ── /sendphotos ────────────────────────────────────────────────────────────
-    api.registerCommand({
+    registerUICommand(api, {
       name: 'sendphotos',
       description: 'Send the photo bundle for a completed job to the customer. Usage: /sendphotos INBOX-001',
       acceptsArgs: true,
