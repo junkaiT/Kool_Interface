@@ -142,3 +142,45 @@ export async function getUnreadCount(conversationId) {
   stmt.free();
   return count;
 }
+
+/**
+ * One row per conversation — the most recent message plus unread count.
+ * Backs the Phase 4 thread list (GET /api/threads). If two messages in the
+ * same conversation share the exact same millisecond timestamp (very rare
+ * at this CRM's message volume), the join can return more than one "latest"
+ * row for that conversation; not worth de-duplicating for that likelihood.
+ */
+export async function getThreadSummaries() {
+  const db = await getDb();
+  const stmt = db.prepare(`
+    SELECT m1.conversation_id, m1.channel, m1.text AS last_text,
+           m1.direction AS last_direction, m1.timestamp AS last_timestamp
+    FROM messages m1
+    INNER JOIN (
+      SELECT conversation_id, MAX(timestamp) AS max_ts
+      FROM messages
+      GROUP BY conversation_id
+    ) m2 ON m1.conversation_id = m2.conversation_id AND m1.timestamp = m2.max_ts
+    ORDER BY m1.timestamp DESC
+  `);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  for (const row of rows) {
+    row.unread_count = await getUnreadCount(row.conversation_id);
+  }
+  return rows;
+}
+
+/**
+ * Marks all unread inbound messages in a conversation as read — called when
+ * the operator opens that thread (GET /api/messages), clearing its unread dot.
+ */
+export async function markConversationRead(conversationId) {
+  const db = await getDb();
+  db.run(
+    "UPDATE messages SET read = 1 WHERE conversation_id = ? AND direction = 'inbound' AND read = 0",
+    [conversationId]
+  );
+  persist(db);
+}

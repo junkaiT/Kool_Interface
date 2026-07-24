@@ -20,8 +20,11 @@
  */
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox, getContacts, findInboxById } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
 import { pollTechnicianSubmissions } from "../../../crm/module3.js";
 import { handleSendPhotosCommand, isPhotoYesReply } from "../../../crm/crm.js";
@@ -65,6 +68,9 @@ function normalizeApprovalText(text: string): string {
   const trimmed = text.trim();
   return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
 }
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const UI_HTML_PATH = join(__dirname, "../../../crm/ui.html");
+
 let syncInFlight = false;
 let sweepRanToday = ''; // tracks the date the sweep last ran in-process
 
@@ -1001,15 +1007,24 @@ export default definePluginEntry({
       res.end(JSON.stringify(data));
     }
 
-    // ── GET /ui — placeholder page (real interface is Phase 4) ────────────────
+    // ── GET /ui — serves crm/ui.html ────────────────────────────────────────────
+    // Read fresh on every request (not cached at module load) so the file can be
+    // hot-edited on the server without a gateway restart.
     api.registerHttpRoute({
       path: '/ui',
       auth: 'plugin',
       match: 'exact',
       handler: async (req: any, res: any) => {
         if (!requireUIAuth(req, res)) return true;
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<!doctype html><html><body><p>KoolAircon CRM — interface coming in Phase 4.</p></body></html>');
+        try {
+          const html = readFileSync(UI_HTML_PATH, 'utf8');
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(html);
+        } catch (err) {
+          api.logger.error('[ui] /ui error:', err instanceof Error ? err.message : String(err));
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Failed to load interface.');
+        }
         return true;
       },
     });
@@ -1034,42 +1049,131 @@ export default definePluginEntry({
       },
     });
 
-    // ── GET /api/threads — stub, real data in Phase 4 ──────────────────────────
+    // ── GET /api/threads — one row per SQLite conversation_id, joined to contacts ─
     api.registerHttpRoute({
       path: '/api/threads',
       auth: 'plugin',
       match: 'exact',
       handler: async (req: any, res: any) => {
         if (!requireUIAuth(req, res)) return true;
-        sendUIJson(res, 200, { ok: true, threads: [] });
+        try {
+          const summaries = await db.getThreadSummaries();
+          const contacts = await getContacts();
+          const threads = summaries.map((s: any) => {
+            const contact = contacts.find((c: any) => c.Channel_Contact_ID === s.conversation_id);
+            return {
+              contactId: contact?.Contact_ID || null,
+              conversationId: s.conversation_id,
+              channel: s.channel,
+              name: contact?.Full_Name || s.conversation_id,
+              status: contact?.Contact_Status || '',
+              phone: contact?.Phone || '',
+              lastText: s.last_text,
+              lastDirection: s.last_direction,
+              lastTimestamp: s.last_timestamp,
+              unreadCount: s.unread_count,
+            };
+          });
+          sendUIJson(res, 200, { threads });
+        } catch (err) {
+          api.logger.error('[ui] /api/threads error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 500, { error: 'Failed to fetch threads.' });
+        }
         return true;
       },
     });
 
-    // ── GET /api/messages?contactId=... — stub, real data in Phase 4 ──────────
+    // ── GET /api/messages?conversationId=...  (or ?contactId=... as a fallback) ─
+    // Uses conversationId directly where possible — it's the actual SQLite key
+    // and every thread from /api/threads has one, whereas contactId is only
+    // present when a 1_Contacts row matched (not guaranteed — e.g. self-test
+    // conversations). contactId is still accepted and resolved via the contacts
+    // sheet for callers that only have that.
     api.registerHttpRoute({
       path: '/api/messages',
       auth: 'plugin',
       match: 'exact',
       handler: async (req: any, res: any) => {
         if (!requireUIAuth(req, res)) return true;
-        const urlObj = new URL(req.url, 'http://localhost');
-        const contactId = urlObj.searchParams.get('contactId') || '';
-        sendUIJson(res, 200, { ok: true, contactId, messages: [] });
+        try {
+          const urlObj = new URL(req.url, 'http://localhost');
+          let conversationId = urlObj.searchParams.get('conversationId') || '';
+          const contactId = urlObj.searchParams.get('contactId') || '';
+          if (!conversationId && contactId) {
+            const contacts = await getContacts();
+            const contact = contacts.find((c: any) => c.Contact_ID === contactId);
+            conversationId = contact?.Channel_Contact_ID || '';
+          }
+          if (!conversationId) {
+            sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
+            return true;
+          }
+          const messages = await db.getMessagesByConversation(conversationId);
+          await db.markConversationRead(conversationId);
+          sendUIJson(res, 200, { conversationId, contactId, messages });
+        } catch (err) {
+          api.logger.error('[ui] /api/messages error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 500, { error: 'Failed to fetch messages.' });
+        }
         return true;
       },
     });
 
-    // ── GET /api/customer?contactId=... — stub, real data in Phase 4/5 ────────
+    // ── GET /api/customer?contactId=...  (or ?conversationId=... as a fallback) ─
     api.registerHttpRoute({
       path: '/api/customer',
       auth: 'plugin',
       match: 'exact',
       handler: async (req: any, res: any) => {
         if (!requireUIAuth(req, res)) return true;
-        const urlObj = new URL(req.url, 'http://localhost');
-        const contactId = urlObj.searchParams.get('contactId') || '';
-        sendUIJson(res, 200, { ok: true, contactId, customer: null });
+        try {
+          const urlObj = new URL(req.url, 'http://localhost');
+          let contactId = urlObj.searchParams.get('contactId') || '';
+          const conversationId = urlObj.searchParams.get('conversationId') || '';
+          const contacts = await getContacts();
+          let contact = contactId ? contacts.find((c: any) => c.Contact_ID === contactId) : null;
+          if (!contact && conversationId) {
+            contact = contacts.find((c: any) => c.Channel_Contact_ID === conversationId);
+            contactId = contact?.Contact_ID || '';
+          }
+          if (!contact) {
+            sendUIJson(res, 200, { contactId, customer: null });
+            return true;
+          }
+          // getJobs() loads the whole 2_Jobs sheet before filtering client-side —
+          // fine at this CRM's job volume, but a known scaling limit if that
+          // sheet grows large; revisit with a Sheets-side filter/query if so.
+          const jobs = (await getJobs()).filter((j: any) => j.Contact_ID === contactId);
+          jobs.sort((a: any, b: any) => (b.Job_Date || '').localeCompare(a.Job_Date || ''));
+          const lastJob = jobs[0] || null;
+          sendUIJson(res, 200, {
+            contactId,
+            customer: {
+              name: contact.Full_Name || '',
+              status: contact.Contact_Status || '',
+              jobs: {
+                lastJobDate: lastJob?.Job_Date || null,
+                lastJobService: lastJob?.Service_Type || null,
+                lastJobUnits: lastJob?.Units_Serviced || lastJob?.Units_In_Home || null,
+                totalJobs: jobs.length,
+              },
+              household: {
+                elderly: contact.Elderly_In_Home === 'TRUE',
+                children: contact.Children_In_Home === 'TRUE',
+                pets: contact.Pets_In_Home === 'TRUE',
+                googleReview: contact.Google_Review_Given === 'TRUE',
+              },
+              property: {
+                address: contact.Address || '',
+                postalCode: contact.Postal_Code || '',
+                assignedTeam: contact.Assigned_Team || '',
+              },
+            },
+          });
+        } catch (err) {
+          api.logger.error('[ui] /api/customer error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 500, { error: 'Failed to fetch customer.' });
+        }
         return true;
       },
     });
@@ -1086,16 +1190,67 @@ export default definePluginEntry({
       },
     });
 
-    // ── GET /api/calendar?date=YYYY-MM-DD — stub, real data in Phase 4 ─────────
+    // ── GET /api/calendar?date=YYYY-MM-DD ───────────────────────────────────────
+    // listEvents() reads one calendar at a time (defaults to the single hardcoded
+    // CALENDAR_ID) — each active team has its own Calendar_ID (scheduler.js
+    // getTeamCalendars), so this fetches every active team's calendar for the
+    // requested day and merges them, rather than only ever showing one team.
     api.registerHttpRoute({
       path: '/api/calendar',
       auth: 'plugin',
       match: 'exact',
       handler: async (req: any, res: any) => {
         if (!requireUIAuth(req, res)) return true;
-        const urlObj = new URL(req.url, 'http://localhost');
-        const date = urlObj.searchParams.get('date') || '';
-        sendUIJson(res, 200, { ok: true, date, events: [] });
+        try {
+          const urlObj = new URL(req.url, 'http://localhost');
+          const date = urlObj.searchParams.get('date') || '';
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            sendUIJson(res, 400, { error: 'date must be YYYY-MM-DD' });
+            return true;
+          }
+          const timeMin = new Date(`${date}T00:00:00+08:00`);
+          const timeMax = new Date(`${date}T23:59:59+08:00`);
+
+          const { getTeamCalendars } = await import('../../../crm/scheduler.js');
+          const { listEvents, parseDescription, extractFromTitle } = await import('../../../crm/calendar.js');
+          const contacts = await getContacts();
+          const teams = await getTeamCalendars();
+
+          const events: any[] = [];
+          for (const team of teams) {
+            let teamEvents: any[] = [];
+            try {
+              teamEvents = await listEvents(timeMin, timeMax, {}, team.Calendar_ID);
+            } catch (err) {
+              api.logger.error(`[ui] /api/calendar: listEvents failed for team ${team.Team_ID}:`, err instanceof Error ? err.message : String(err));
+              continue;
+            }
+            for (const ev of teamEvents) {
+              const meta = parseDescription(ev.description);
+              const titleParts = extractFromTitle(ev.summary);
+              const contactId = meta.contact_id || titleParts.contactId || null;
+              const contact = contactId ? contacts.find((c: any) => c.Contact_ID === contactId) : null;
+              events.push({
+                eventId: ev.id,
+                start: ev.start?.dateTime || ev.start?.date || null,
+                end: ev.end?.dateTime || ev.end?.date || null,
+                status: ev.status || null,
+                team: team.Team_Name,
+                teamId: team.Team_ID,
+                contactId,
+                customerName: contact?.Full_Name || null,
+                serviceType: meta.service || null,
+                units: meta.units || null,
+                jobId: meta.job_id || titleParts.jobId || null,
+              });
+            }
+          }
+          events.sort((a, b) => String(a.start).localeCompare(String(b.start)));
+          sendUIJson(res, 200, { date, events });
+        } catch (err) {
+          api.logger.error('[ui] /api/calendar error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 500, { error: 'Failed to fetch calendar.' });
+        }
         return true;
       },
     });
