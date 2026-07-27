@@ -190,14 +190,39 @@
     text-align: center;
   }
 
-  #compose-banner {
-    background: #fff8e6;
-    border-top: 1px solid #f0dca0;
-    color: #8a6d1f;
-    font-size: 12.5px;
+  #compose-bar {
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
     padding: 10px 16px;
-    text-align: center;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
   }
+  #compose-input {
+    flex: 1;
+    resize: none;
+    max-height: 120px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.4;
+  }
+  #compose-input:disabled { background: var(--bg-hover); color: var(--text-dim); }
+  #compose-send {
+    flex: 0 0 auto;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #compose-send:disabled { background: var(--bg-active); color: var(--text-dim); cursor: default; }
+  #compose-error { padding: 0 16px 8px; color: #c0392b; font-size: 12px; display: none; }
 
   /* ── Calendar panel (right) ─────────────────────────────────────────────── */
   #cal-col {
@@ -284,8 +309,10 @@
       <div id="message-empty">Select a conversation from the left to view its history.</div>
     </div>
 
-    <div id="compose-banner" style="display:none;">
-      Read-only preview — sending arrives in Phase 5.
+    <div id="compose-error"></div>
+    <div id="compose-bar" style="display:none;">
+      <textarea id="compose-input" rows="1" placeholder="Type a message…"></textarea>
+      <button id="compose-send">Send</button>
     </div>
   </div>
 
@@ -427,7 +454,7 @@
     renderThreadList();
 
     document.getElementById("chat-header").style.display = "flex";
-    document.getElementById("compose-banner").style.display = "block";
+    document.getElementById("compose-bar").style.display = "flex";
     document.getElementById("chat-avatar").className = "avatar channel-" + thread.channel;
     document.getElementById("chat-avatar").textContent = initials(thread.name);
     var nameEl = document.getElementById("chat-header-name");
@@ -538,6 +565,75 @@
     propCol.appendChild(el("div", null, customer.property.assignedTeam ? "Team: " + customer.property.assignedTeam : "No team assigned"));
   }
 
+  // ── Compose (Path A: plain-text send) ───────────────────────────────────
+  function updateThreadPreview(m) {
+    var existing = state.threads.find(function (t) { return t.conversationId === m.conversation_id; });
+    if (!existing) return true;
+    existing.lastText = m.text;
+    existing.lastDirection = m.direction;
+    existing.lastTimestamp = m.timestamp;
+    if (m.direction === "inbound" && m.conversation_id !== state.activeConversationId) {
+      existing.unreadCount = (existing.unreadCount || 0) + 1;
+    }
+    return false;
+  }
+
+  var composeInput = document.getElementById("compose-input");
+  var composeSend = document.getElementById("compose-send");
+  var composeError = document.getElementById("compose-error");
+
+  function setComposeBusy(busy) {
+    composeInput.disabled = busy;
+    composeSend.disabled = busy;
+  }
+
+  function sendCompose() {
+    var text = composeInput.value.trim();
+    if (!text || !state.activeConversationId) return;
+    composeError.style.display = "none";
+    setComposeBusy(true);
+    fetch("/api/send", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId: state.activeConversationId, text: text }),
+    }).then(function (r) {
+      return r.json().then(function (data) {
+        if (!r.ok || !data.ok) throw new Error(data.error || ("HTTP " + r.status));
+        return data;
+      });
+    }).then(function (data) {
+      composeInput.value = "";
+      composeInput.style.height = "auto";
+      if (data.message.conversation_id === state.activeConversationId) {
+        appendMessage(data.message);
+      }
+      updateThreadPreview(data.message);
+      state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+      renderThreadList();
+      state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+    }).catch(function (err) {
+      console.error("[ui] send failed:", err);
+      composeError.textContent = "Failed to send — try again.";
+      composeError.style.display = "block";
+    }).finally(function () {
+      setComposeBusy(false);
+      composeInput.focus();
+    });
+  }
+
+  composeSend.addEventListener("click", sendCompose);
+  composeInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendCompose();
+    }
+  });
+  composeInput.addEventListener("input", function () {
+    composeInput.style.height = "auto";
+    composeInput.style.height = Math.min(composeInput.scrollHeight, 120) + "px";
+  });
+
   // ── Panel toggles ────────────────────────────────────────────────────────
   document.getElementById("toggle-customer-panel").addEventListener("click", function () {
     var panel = document.getElementById("customer-panel");
@@ -631,7 +727,7 @@
   // ── Live updates (long-poll) ────────────────────────────────────────────
   function poll() {
     fetchJson("/api/updates?since=" + state.lastUpdateSince).then(function (data) {
-      state.lastUpdateSince = data.now;
+      state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
       var messages = data.messages || [];
       if (messages.length === 0) return;
 
@@ -640,17 +736,7 @@
         if (m.conversation_id === state.activeConversationId) {
           appendMessage(m);
         }
-        var existing = state.threads.find(function (t) { return t.conversationId === m.conversation_id; });
-        if (existing) {
-          existing.lastText = m.text;
-          existing.lastDirection = m.direction;
-          existing.lastTimestamp = m.timestamp;
-          if (m.direction === "inbound" && m.conversation_id !== state.activeConversationId) {
-            existing.unreadCount = (existing.unreadCount || 0) + 1;
-          }
-        } else {
-          threadsNeedReload = true;
-        }
+        if (updateThreadPreview(m)) threadsNeedReload = true;
       });
 
       if (threadsNeedReload) {

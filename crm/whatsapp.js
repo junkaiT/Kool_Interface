@@ -35,9 +35,10 @@ if (!WHATSAPP_VERIFY_TOKEN) {
  *
  * @param {string} to   - Recipient phone number in E.164 format (e.g. "6591234567")
  * @param {string} text - Message body
+ * @param {string} [messageType='bot-resp'] - db log message_type ('direct'|'bot-cmd'|'draft'|'bot-resp')
  * @returns {Promise<object>} Parsed JSON response from Meta
  */
-export async function sendWhatsApp(to, text) {
+export async function sendWhatsApp(to, text, messageType = 'bot-resp') {
   if (!WHATSAPP_ACCESS_TOKEN) {
     throw new Error("[whatsapp] WHATSAPP_ACCESS_TOKEN is not set — cannot send message.");
   }
@@ -86,7 +87,7 @@ export async function sendWhatsApp(to, text) {
     conversation_id: String(to),
     channel: 'whatsapp',
     direction: 'outbound',
-    message_type: 'bot-resp',
+    message_type: messageType,
     text,
     sender: 'operator',
   }).catch(e => console.error('[whatsapp] db log failed:', e.message));

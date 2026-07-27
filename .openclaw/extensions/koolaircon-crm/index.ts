@@ -46,6 +46,7 @@ import {
   isQueueApprovalText,
   handleQueueApproval,
   OPERATOR_TELEGRAM_ID,
+  sendTelegram,
 } from "../../../crm/bot.js";
 const TEST_CUSTOMER_ID = "TEST-9999";
 const TEST_CUSTOMER_NAME = "Test Customer";
@@ -1255,7 +1256,10 @@ export default definePluginEntry({
       },
     });
 
-    // ── POST /api/send — stub, real Path A send logic in Phase 5 ───────────────
+    // ── POST /api/send — Path A: plain-text compose, sends immediately ─────────
+    // Same conversationId-first / contactId-fallback resolution as /api/messages.
+    // Channel has no dedicated contact field — derived from Source, same check
+    // already used at crm/crm.js:773 and crm/booking.js:70.
     api.registerHttpRoute({
       path: '/api/send',
       auth: 'plugin',
@@ -1272,7 +1276,60 @@ export default definePluginEntry({
           req.on('end', () => resolve());
           req.on('error', reject);
         });
-        sendUIJson(res, 200, { ok: true, received: rawBody.length > 0 });
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+          return true;
+        }
+
+        const text = String(parsed?.text || '').trim();
+        if (!text) {
+          sendUIJson(res, 400, { error: 'text is required' });
+          return true;
+        }
+
+        try {
+          let conversationId = String(parsed?.conversationId || '');
+          const contactId = String(parsed?.contactId || '');
+          const contacts = await getContacts();
+          let contact = conversationId
+            ? contacts.find((c: any) => c.Channel_Contact_ID === conversationId)
+            : null;
+          if (!contact && contactId) {
+            contact = contacts.find((c: any) => c.Contact_ID === contactId);
+            conversationId = contact?.Channel_Contact_ID || conversationId;
+          }
+          if (!conversationId) {
+            sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
+            return true;
+          }
+
+          const channel = (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+          if (channel === 'whatsapp') {
+            await sendWhatsApp(conversationId, text, 'direct');
+          } else {
+            await sendTelegram(conversationId, text, 'direct');
+          }
+
+          const now = Date.now();
+          const message = {
+            conversation_id: conversationId,
+            channel,
+            direction: 'outbound',
+            message_type: 'direct',
+            text,
+            timestamp: now,
+            sender: 'operator',
+          };
+          broadcastToUI({ type: 'message', message });
+          sendUIJson(res, 200, { ok: true, now, message });
+        } catch (err) {
+          api.logger.error('[ui] /api/send error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 502, { error: 'Failed to send message.' });
+        }
         return true;
       },
     });

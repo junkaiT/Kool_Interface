@@ -48,7 +48,7 @@ export function getStagedSlots() {
 }
 
 // ── Telegram API ───────────────────────────────────────────────────────────────
-export async function sendTelegram(chatId, text) {
+export async function sendTelegram(chatId, text, messageType = 'bot-resp') {
  const res = await fetch(`${TG_API}/sendMessage`, {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
@@ -64,7 +64,7 @@ export async function sendTelegram(chatId, text) {
  conversation_id: String(chatId),
  channel: 'telegram',
  direction: 'outbound',
- message_type: 'bot-resp',
+ message_type: messageType,
  text,
  sender: 'operator',
  }).catch(e => console.error('[bot] db log failed:', e.message));
