@@ -5,758 +5,471 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KoolAircon CRM</title>
 <style>
-  :root {
-    --border: #d9dde2;
-    --bg-panel: #ffffff;
-    --bg-app: #f0f2f5;
-    --bg-hover: #f5f6f7;
-    --bg-active: #e9edf3;
-    --text: #1b1f23;
-    --text-dim: #667085;
-    --accent: #2f6fed;
-    --pill-lead: #7c3aed;
-    --pill-customer: #16a34a;
-    --pill-booked: #d97706;
-    --unread-dot: #2f6fed;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%; width: 100%;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: var(--text);
-    background: var(--bg-app);
-  }
-  #app {
-    display: flex;
-    height: 100vh;
-    width: 100vw;
-    overflow: hidden;
-  }
-
-  /* ── Thread list (left) ─────────────────────────────────────────────────── */
-  #thread-col {
-    width: 280px;
-    flex: 0 0 280px;
-    background: var(--bg-panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-  #thread-col.collapsed { display: none; }
-  #thread-header {
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--border);
-  }
-  #thread-header h1 {
-    font-size: 16px;
-    margin: 0 0 8px 0;
-  }
-  #thread-search {
-    width: 100%;
-    padding: 7px 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 13px;
-  }
-  #thread-list {
-    overflow-y: auto;
-    flex: 1;
-  }
-  .thread-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    cursor: pointer;
-    border-bottom: 1px solid #f0f1f3;
-  }
-  .thread-row:hover { background: var(--bg-hover); }
-  .thread-row.active { background: var(--bg-active); }
-  .avatar {
-    flex: 0 0 auto;
-    width: 38px; height: 38px;
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    color: #fff; font-weight: 600; font-size: 14px;
-  }
-  .avatar.channel-telegram { background: #2f6fed; }
-  .avatar.channel-whatsapp { background: #16a34a; }
-  .thread-main { flex: 1; min-width: 0; }
-  .thread-top-line { display: flex; justify-content: space-between; gap: 6px; }
-  .thread-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .thread-time { font-size: 11px; color: var(--text-dim); flex: 0 0 auto; }
-  .thread-bottom-line { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 2px; }
-  .thread-preview { font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-  .thread-badges { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
-  .pill {
-    font-size: 10px;
-    padding: 2px 7px;
-    border-radius: 10px;
-    color: #fff;
-    white-space: nowrap;
-  }
-  .pill.channel-telegram { background: #2f6fed; }
-  .pill.channel-whatsapp { background: #16a34a; }
-  .pill.status-lead { background: var(--pill-lead); }
-  .pill.status-customer { background: var(--pill-customer); }
-  .pill.status-booked { background: var(--pill-booked); }
-  .unread-dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--unread-dot);
-    flex: 0 0 auto;
-  }
-  #thread-empty { padding: 24px 14px; color: var(--text-dim); font-size: 13px; text-align: center; }
-
-  /* ── Chat panel (centre) ────────────────────────────────────────────────── */
-  #chat-col {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    background: var(--bg-app);
-  }
-  #chat-header {
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  #chat-header .avatar { width: 34px; height: 34px; font-size: 13px; }
-  #chat-header-info { flex: 1; min-width: 0; }
-  #chat-header-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
-  #chat-header-sub { font-size: 12px; color: var(--text-dim); }
-  .icon-btn {
-    width: 32px; height: 32px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: #fff;
-    cursor: pointer;
-    font-size: 15px;
-    display: flex; align-items: center; justify-content: center;
-    flex: 0 0 auto;
-  }
-  .icon-btn:hover { background: var(--bg-hover); }
-  .icon-btn.toggled { background: var(--bg-active); border-color: var(--accent); }
-
-  #customer-panel {
-    background: var(--bg-panel);
-    border-bottom: 1px solid var(--border);
-    display: none;
-    padding: 14px 16px;
-    gap: 20px;
-  }
-  #customer-panel.open { display: flex; }
-  #customer-panel .col { flex: 1; font-size: 12.5px; }
-  #customer-panel .col h3 { margin: 0 0 6px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
-  #customer-panel .col div { margin-bottom: 3px; }
-  #customer-panel .flag-yes { color: var(--pill-customer); }
-  #customer-panel .flag-no { color: var(--text-dim); }
-
-  #message-scroll {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  #message-empty { margin: auto; color: var(--text-dim); font-size: 13px; }
-  .bubble-row { display: flex; }
-  .bubble-row.align-left { justify-content: flex-start; }
-  .bubble-row.align-right { justify-content: flex-end; }
-  .bubble-row.align-center { justify-content: center; }
-  .bubble {
-    max-width: 60%;
-    padding: 8px 12px;
-    border-radius: 10px;
-    font-size: 13.5px;
-    line-height: 1.4;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .bubble-time { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
-  .bubble.type-inbound { background: #fff; border: 1px solid var(--border); }
-  .bubble.type-outbound-direct { background: var(--accent); color: #fff; }
-  .bubble.type-bot-cmd { background: #e6e8eb; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
-  .bubble.type-bot-cmd .bubble-label { font-size: 10px; color: var(--text-dim); margin-bottom: 3px; font-family: inherit; }
-  .bubble.type-bot-resp {
-    background: #eceef1;
-    color: var(--text-dim);
-    font-size: 12.5px;
-    max-width: 75%;
-    text-align: center;
-  }
-
-  #compose-bar {
-    background: var(--bg-panel);
-    border-top: 1px solid var(--border);
-    padding: 10px 16px;
-    display: flex;
-    align-items: flex-end;
-    gap: 10px;
-  }
-  #compose-input {
-    flex: 1;
-    resize: none;
-    max-height: 120px;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font: inherit;
-    font-size: 13.5px;
-    line-height: 1.4;
-  }
-  #compose-input:disabled { background: var(--bg-hover); color: var(--text-dim); }
-  #compose-send {
-    flex: 0 0 auto;
-    padding: 8px 16px;
-    border: none;
-    border-radius: 8px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 13.5px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  #compose-send:disabled { background: var(--bg-active); color: var(--text-dim); cursor: default; }
-  #compose-error { padding: 0 16px 8px; color: #c0392b; font-size: 12px; display: none; }
-
-  /* ── Calendar panel (right) ─────────────────────────────────────────────── */
-  #cal-col {
-    width: 240px;
-    flex: 0 0 240px;
-    background: var(--bg-panel);
-    border-left: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-  }
-  #cal-col.collapsed { display: none; }
-  #cal-header { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-  #cal-month-label { font-weight: 600; font-size: 13px; }
-  #cal-nav button { border: none; background: none; cursor: pointer; font-size: 13px; padding: 2px 6px; }
-  #cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 10px; }
-  .cal-dow { font-size: 10px; color: var(--text-dim); text-align: center; }
-  .cal-day {
-    aspect-ratio: 1;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-size: 11.5px;
-    border-radius: 6px;
-    cursor: pointer;
-    position: relative;
-  }
-  .cal-day:hover { background: var(--bg-hover); }
-  .cal-day.today { border: 1px solid var(--accent); }
-  .cal-day.selected { background: var(--accent); color: #fff; }
-  .cal-day.empty { visibility: hidden; }
-  .cal-day .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); margin-top: 2px; }
-  .cal-day.selected .dot { background: #fff; }
-  #cal-jobs { padding: 10px 14px; border-top: 1px solid var(--border); }
-  #cal-jobs h3 { font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin: 0 0 8px 0; }
-  .cal-job {
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 6px;
-    font-size: 12px;
-  }
-  .cal-job .cal-job-time { font-weight: 600; }
-  .cal-job .cal-job-team { color: var(--text-dim); font-size: 11px; }
-  #cal-jobs-empty { color: var(--text-dim); font-size: 12px; }
-
-  ::-webkit-scrollbar { width: 8px; }
-  ::-webkit-scrollbar-thumb { background: #c7ccd3; border-radius: 4px; }
+ :root {
+ --border: #d9dde2;
+ --bg-panel: #ffffff;
+ --bg-app: #f0f2f5;
+ --bg-hover: #f5f6f7;
+ --bg-active: #e9edf3;
+ --text: #1b1f23;
+ --text-dim: #667085;
+ --accent: #2f6fed;
+ --pill-lead: #7c3aed;
+ --pill-customer: #16a34a;
+ --pill-booked: #d97706;
+ --unread-dot: #2f6fed;
+ }
+ * { box-sizing: border-box; }
+ html, body {
+ margin: 0; height: 100%; width: 100%;
+ font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+ color: var(--text);
+ background: var(--bg-app);
+ }
+ #app { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
+ #thread-col { width: 280px; flex: 0 0 280px; background: var(--bg-panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+ #thread-col.collapsed { display: none; }
+ #thread-header { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+ #thread-header h1 { font-size: 16px; margin: 0 0 8px 0; }
+ #thread-search { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+ #thread-list { overflow-y: auto; flex: 1; }
+ .thread-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f0f1f3; }
+ .thread-row:hover { background: var(--bg-hover); }
+ .thread-row.active { background: var(--bg-active); }
+ .avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; font-size: 14px; }
+ .avatar.channel-telegram { background: #2f6fed; }
+ .avatar.channel-whatsapp { background: #16a34a; }
+ .thread-main { flex: 1; min-width: 0; }
+ .thread-top-line { display: flex; justify-content: space-between; gap: 6px; }
+ .thread-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .thread-time { font-size: 11px; color: var(--text-dim); flex: 0 0 auto; }
+ .thread-bottom-line { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 2px; }
+ .thread-preview { font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+ .thread-badges { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+ .pill { font-size: 10px; padding: 2px 7px; border-radius: 10px; color: #fff; white-space: nowrap; }
+ .pill.channel-telegram { background: #2f6fed; }
+ .pill.channel-whatsapp { background: #16a34a; }
+ .pill.status-lead { background: var(--pill-lead); }
+ .pill.status-customer { background: var(--pill-customer); }
+ .pill.status-booked { background: var(--pill-booked); }
+ .unread-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--unread-dot); flex: 0 0 auto; }
+ #thread-empty { padding: 24px 14px; color: var(--text-dim); font-size: 13px; text-align: center; }
+ #chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-app); }
+ #chat-header { background: var(--bg-panel); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+ #chat-header .avatar { width: 34px; height: 34px; font-size: 13px; }
+ #chat-header-info { flex: 1; min-width: 0; }
+ #chat-header-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+ #chat-header-sub { font-size: 12px; color: var(--text-dim); }
+ .icon-btn { width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+ .icon-btn:hover { background: var(--bg-hover); }
+ .icon-btn.toggled { background: var(--bg-active); border-color: var(--accent); }
+ #customer-panel { background: var(--bg-panel); border-bottom: 1px solid var(--border); display: none; padding: 14px 16px; gap: 20px; }
+ #customer-panel.open { display: flex; }
+ #customer-panel .col { flex: 1; font-size: 12.5px; }
+ #customer-panel .col h3 { margin: 0 0 6px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+ #customer-panel .col div { margin-bottom: 3px; }
+ #customer-panel .flag-yes { color: var(--pill-customer); }
+ #customer-panel .flag-no { color: var(--text-dim); }
+ #message-scroll { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+ #chat-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 14px; }
+ .bubble-row { display: flex; }
+ .bubble-row.inbound { justify-content: flex-start; }
+ .bubble-row.outbound { justify-content: flex-end; }
+ .bubble { max-width: 68%; padding: 8px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; word-break: break-word; }
+ .bubble.inbound { background: #fff; border: 1px solid var(--border); border-radius: 2px 12px 12px 12px; }
+ .bubble.outbound-direct { background: var(--accent); color: #fff; border-radius: 12px 2px 12px 12px; }
+ .bubble.bot-command { background: #1b1f23; color: #d4d7dc; font-family: monospace; font-size: 12.5px; border-radius: 12px 2px 12px 12px; }
+ .bubble.bot-response { background: #e9edf3; border-radius: 12px 2px 12px 12px; }
+ .bubble-meta { font-size: 10.5px; margin-top: 3px; opacity: .6; }
+ #compose-bar { background: var(--bg-panel); border-top: 1px solid var(--border); padding: 10px 16px; display: none; align-items: flex-end; gap: 10px; }
+ #compose-input { flex: 1; resize: none; max-height: 120px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 13.5px; line-height: 1.4; }
+ #compose-input:disabled { background: var(--bg-hover); color: var(--text-dim); }
+ #compose-send { flex: 0 0 auto; padding: 8px 16px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+ #compose-send:disabled { background: var(--bg-active); color: var(--text-dim); cursor: default; }
+ #compose-error { padding: 0 16px 8px; color: #c0392b; font-size: 12px; display: none; }
+ #cal-col { width: 260px; flex: 0 0 260px; background: var(--bg-panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+ #cal-col.collapsed { display: none; }
+ #cal-header { padding: 10px 12px 6px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; }
+ #cal-month-label { flex: 1; font-weight: 600; font-size: 13px; }
+ #cal-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 2px; padding: 8px; }
+ .cal-dow { font-size: 10px; text-align: center; color: var(--text-dim); padding: 2px 0; }
+ .cal-day { font-size: 12px; text-align: center; padding: 5px 2px; border-radius: 5px; cursor: pointer; }
+ .cal-day:hover { background: var(--bg-hover); }
+ .cal-day.today { font-weight: 700; color: var(--accent); }
+ .cal-day.selected { background: var(--accent); color: #fff; }
+ .cal-day.empty { cursor: default; }
+ #cal-jobs { flex: 1; overflow-y: auto; padding: 8px 12px; }
+ #cal-jobs-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); margin-bottom: 6px; }
+ .cal-job { background: var(--bg-hover); border-radius: 6px; padding: 7px 9px; margin-bottom: 6px; font-size: 12px; }
+ .cal-job-time { font-weight: 600; }
+ .cal-job-team { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+ #cal-jobs-empty { color: var(--text-dim); font-size: 12px; }
 </style>
 </head>
 <body>
 <div id="app">
+ <div id="thread-col">
+ <div id="thread-header">
+ <h1>KoolAircon CRM</h1>
+ <input id="thread-search" type="search" placeholder="Search conversations…">
+ </div>
+ <div id="thread-list"></div>
+ <div id="thread-empty" style="display:none">No conversations yet.</div>
+ </div>
 
-  <div id="thread-col">
-    <div id="thread-header">
-      <h1>KoolAircon CRM</h1>
-      <input id="thread-search" type="text" placeholder="Search name or phone…">
-    </div>
-    <div id="thread-list"></div>
-  </div>
+ <div id="chat-col">
+ <div id="chat-header">
+ <div class="avatar channel-telegram" id="chat-avatar">–</div>
+ <div id="chat-header-info">
+ <div id="chat-header-name"><span id="chat-name">Select a conversation</span></div>
+ <div id="chat-header-sub"></div>
+ </div>
+ <button class="icon-btn" id="toggle-customer-panel" title="Customer info">👤</button>
+ <button class="icon-btn" id="toggle-cal-panel" title="Calendar">📅</button>
+ </div>
+ <div id="customer-panel">
+ <div class="col" id="customer-col-jobs"><h3>Job History</h3></div>
+ <div class="col" id="customer-col-household"><h3>Household</h3></div>
+ <div class="col" id="customer-col-property"><h3>Property</h3></div>
+ </div>
+ <div id="message-scroll">
+ <div id="chat-placeholder">← Select a conversation</div>
+ </div>
+ <div id="compose-error"></div>
+ <div id="compose-bar">
+ <textarea id="compose-input" rows="1" placeholder="Type a message…"></textarea>
+ <button id="compose-send">Send</button>
+ </div>
+ </div>
 
-  <div id="chat-col">
-    <div id="chat-header" style="display:none;">
-      <div class="avatar" id="chat-avatar"></div>
-      <div id="chat-header-info">
-        <div id="chat-header-name"></div>
-        <div id="chat-header-sub"></div>
-      </div>
-      <button class="icon-btn" id="toggle-customer-panel" title="Customer info">i</button>
-      <button class="icon-btn" id="toggle-cal-panel" title="Calendar">🗓</button>
-    </div>
-
-    <div id="customer-panel">
-      <div class="col" id="customer-col-jobs">
-        <h3>Job History</h3>
-      </div>
-      <div class="col" id="customer-col-household">
-        <h3>Household</h3>
-      </div>
-      <div class="col" id="customer-col-property">
-        <h3>Property</h3>
-      </div>
-    </div>
-
-    <div id="message-scroll">
-      <div id="message-empty">Select a conversation from the left to view its history.</div>
-    </div>
-
-    <div id="compose-error"></div>
-    <div id="compose-bar" style="display:none;">
-      <textarea id="compose-input" rows="1" placeholder="Type a message…"></textarea>
-      <button id="compose-send">Send</button>
-    </div>
-  </div>
-
-  <div id="cal-col">
-    <div id="cal-header">
-      <div id="cal-nav"><button id="cal-prev">‹</button></div>
-      <div id="cal-month-label"></div>
-      <div id="cal-nav"><button id="cal-next">›</button></div>
-    </div>
-    <div id="cal-grid"></div>
-    <div id="cal-jobs">
-      <h3 id="cal-jobs-heading">Jobs</h3>
-      <div id="cal-jobs-list"><div id="cal-jobs-empty">Select a day.</div></div>
-    </div>
-  </div>
-
+ <div id="cal-col">
+ <div id="cal-header">
+ <button class="icon-btn" id="cal-prev">‹</button>
+ <span id="cal-month-label"></span>
+ <button class="icon-btn" id="cal-next">›</button>
+ </div>
+ <div id="cal-grid"></div>
+ <div id="cal-jobs">
+ <div id="cal-jobs-heading">Jobs</div>
+ <div id="cal-jobs-list"><div id="cal-jobs-empty" style="color:var(--text-dim);font-size:12px">Select a date.</div></div>
+ </div>
+ </div>
 </div>
-
 <script>
 (function () {
-  "use strict";
+ var state = {
+ threads: [],
+ activeConversationId: null,
+ calMonth: new Date(),
+ calSelectedDate: null,
+ lastUpdateSince: 0,
+ };
 
-  // ── State ────────────────────────────────────────────────────────────────
-  var state = {
-    threads: [],
-    activeConversationId: null,
-    activeContactId: null,
-    lastUpdateSince: 0,
-    calMonth: new Date(),
-    calSelectedDate: null,
-  };
+ function el(tag, cls, text) {
+ var e = document.createElement(tag);
+ if (cls) e.className = cls;
+ if (text != null) e.textContent = text;
+ return e;
+ }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined) e.textContent = text;
-    return e;
-  }
+ function fetchJson(path) {
+ return fetch(path, { headers: { "ngrok-skip-browser-warning": "true" } })
+ .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+ }
 
-  function initials(name) {
-    if (!name) return "?";
-    var parts = String(name).trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "?";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  }
+ function fmtTime(ts) {
+ if (!ts) return "";
+ var d = new Date(typeof ts === "number" ? ts : parseInt(ts, 10));
+ var now = new Date();
+ if (d.toDateString() === now.toDateString()) {
+ return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+ }
+ return d.toLocaleDateString([], { month: "short", day: "numeric" });
+ }
 
-  function fmtTime(ts) {
-    if (!ts) return "";
-    var d = new Date(ts);
-    var now = new Date();
-    var sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    var diffDays = Math.floor((now - d) / 86400000);
-    if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
-    return d.toLocaleDateString([], { day: "2-digit", month: "short" });
-  }
+ function initials(name) {
+ if (!name) return "?";
+ var parts = String(name).trim().split(/\s+/);
+ return (parts[0][0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
+ }
 
-  function statusPillClass(status) {
-    var s = String(status || "").toLowerCase();
-    if (s === "lead") return "status-lead";
-    if (s === "customer") return "status-customer";
-    if (s === "booked") return "status-booked";
-    return "";
-  }
+ function loadThreads() {
+ fetchJson("/api/threads").then(function (data) {
+ state.threads = (data.threads || []).map(function (t) {
+ return {
+ conversationId: t.conversationId,
+ contactId: t.contactId || null,
+ name: t.name || t.conversationId,
+ channel: t.channel || "telegram",
+ status: t.status || "",
+ lastText: t.lastText || "",
+ lastDirection: t.lastDirection || "",
+ lastTimestamp: t.lastTimestamp || 0,
+ unreadCount: t.unreadCount || 0,
+ };
+ });
+ renderThreadList();
+ }).catch(function (err) {
+ console.error("[ui] failed to load threads:", err);
+ });
+ }
 
-  function fetchJson(url) {
-    return fetch(url, { credentials: "same-origin" }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status + " for " + url);
-      return r.json();
-    });
-  }
+ function renderThreadList() {
+ var q = (document.getElementById("thread-search").value || "").toLowerCase();
+ var list = document.getElementById("thread-list");
+ var empty = document.getElementById("thread-empty");
+ list.innerHTML = "";
+ var filtered = state.threads.filter(function (t) {
+ return !q || t.name.toLowerCase().includes(q) || (t.conversationId || "").toLowerCase().includes(q);
+ });
+ if (filtered.length === 0) { empty.style.display = ""; return; }
+ empty.style.display = "none";
+ filtered.forEach(function (t) {
+ var row = el("div", "thread-row" + (t.conversationId === state.activeConversationId ? " active" : ""));
+ var av = el("div", "avatar channel-" + t.channel, initials(t.name));
+ row.appendChild(av);
+ var main = el("div", "thread-main");
+ var top = el("div", "thread-top-line");
+ top.appendChild(el("span", "thread-name", t.name));
+ top.appendChild(el("span", "thread-time", fmtTime(t.lastTimestamp)));
+ main.appendChild(top);
+ var bot = el("div", "thread-bottom-line");
+ var preview = el("span", "thread-preview", (t.lastDirection === "outbound" ? "You: " : "") + (t.lastText || ""));
+ bot.appendChild(preview);
+ var badges = el("div", "thread-badges");
+ if (t.status) badges.appendChild(el("span", "pill status-" + t.status.toLowerCase(), t.status));
+ badges.appendChild(el("span", "pill channel-" + t.channel, t.channel));
+ if (t.unreadCount > 0) badges.appendChild(el("span", "unread-dot"));
+ bot.appendChild(badges);
+ main.appendChild(bot);
+ row.appendChild(main);
+ row.addEventListener("click", function () { openThread(t); });
+ list.appendChild(row);
+ });
+ }
 
-  // ── Thread list ──────────────────────────────────────────────────────────
-  function loadThreads() {
-    return fetchJson("/api/threads").then(function (data) {
-      state.threads = data.threads || [];
-      renderThreadList();
-    }).catch(function (err) {
-      console.error("[ui] failed to load threads:", err);
-    });
-  }
+ function openThread(thread) {
+ state.activeConversationId = thread.conversationId;
+ renderThreadList();
+ var avatar = document.getElementById("chat-avatar");
+ avatar.className = "avatar channel-" + thread.channel;
+ avatar.textContent = initials(thread.name);
+ document.getElementById("chat-name").textContent = thread.name;
+ document.getElementById("chat-header-sub").textContent = thread.channel + (thread.status ? " · " + thread.status : "");
+ document.getElementById("compose-bar").style.display = "flex";
+ var scroll = document.getElementById("message-scroll");
+ scroll.innerHTML = "<div style='color:var(--text-dim);font-size:13px;text-align:center'>Loading…</div>";
+ document.getElementById("chat-placeholder") && (document.getElementById("chat-placeholder").style.display = "none");
+ var qs = thread.contactId
+ ? "contactId=" + encodeURIComponent(thread.contactId)
+ : "conversationId=" + encodeURIComponent(thread.conversationId);
+ fetchJson("/api/messages?" + qs).then(function (data) {
+ scroll.innerHTML = "";
+ var msgs = data.messages || [];
+ if (msgs.length === 0) { scroll.appendChild(el("div", null, "No messages yet.")); return; }
+ msgs.forEach(function (m) { appendMessage(m); });
+ scroll.scrollTop = scroll.scrollHeight;
+ var t = state.threads.find(function (x) { return x.conversationId === thread.conversationId; });
+ if (t) { t.unreadCount = 0; renderThreadList(); }
+ }).catch(function (err) {
+ console.error("[ui] failed to load messages:", err);
+ scroll.innerHTML = "<div style='color:red;font-size:13px'>Failed to load messages.</div>";
+ });
+ fetchJson("/api/customer?" + qs).then(function (data) {
+ renderCustomer(data.customer);
+ }).catch(function (err) { console.error("[ui] failed to load customer:", err); });
+ }
 
-  function renderThreadList() {
-    var query = document.getElementById("thread-search").value.trim().toLowerCase();
-    var list = document.getElementById("thread-list");
-    list.innerHTML = "";
+ function appendMessage(m) {
+ var scroll = document.getElementById("message-scroll");
+ if (!scroll) return;
+ var dir = m.direction || "inbound";
+ var mtype = m.message_type || "direct";
+ var bubbleCls = dir === "inbound" ? "inbound" : (mtype === "bot-command" ? "bot-command" : mtype === "bot-response" ? "bot-response" : "outbound-direct");
+ var row = el("div", "bubble-row " + dir);
+ var bubble = el("div", "bubble " + bubbleCls, m.text || "");
+ var meta = el("div", "bubble-meta", fmtTime(m.timestamp));
+ bubble.appendChild(meta);
+ row.appendChild(bubble);
+ scroll.appendChild(row);
+ }
 
-    var filtered = state.threads.filter(function (t) {
-      if (!query) return true;
-      return (t.name || "").toLowerCase().includes(query) || (t.phone || "").toLowerCase().includes(query);
-    });
+ function flagRow(label, value) {
+ var row = el("div");
+ row.appendChild(document.createTextNode(label + ": "));
+ var mark = el("span", value ? "flag-yes" : "flag-no", value ? "✓" : "–");
+ row.appendChild(mark);
+ return row;
+ }
 
-    if (filtered.length === 0) {
-      var empty = el("div", null, state.threads.length === 0 ? "No conversations yet." : "No matches.");
-      empty.id = "thread-empty";
-      list.appendChild(empty);
-      return;
-    }
+ function renderCustomer(customer) {
+ var jobsCol = document.getElementById("customer-col-jobs");
+ var houseCol = document.getElementById("customer-col-household");
+ var propCol = document.getElementById("customer-col-property");
+ jobsCol.innerHTML = "<h3>Job History</h3>";
+ houseCol.innerHTML = "<h3>Household</h3>";
+ propCol.innerHTML = "<h3>Property</h3>";
+ if (!customer) { jobsCol.appendChild(el("div", null, "No customer record.")); return; }
+ jobsCol.appendChild(el("div", null, customer.jobs && customer.jobs.lastJobDate ? "Last: " + customer.jobs.lastJobDate + " · " + (customer.jobs.lastJobService || "") + " ×" + (customer.jobs.lastJobUnits || "?") : "No jobs yet."));
+ jobsCol.appendChild(el("div", null, "Total jobs: " + (customer.jobs ? customer.jobs.totalJobs : 0)));
+ houseCol.appendChild(flagRow("Elderly", customer.household && customer.household.elderly));
+ houseCol.appendChild(flagRow("Children", customer.household && customer.household.children));
+ houseCol.appendChild(flagRow("Pets", customer.household && customer.household.pets));
+ houseCol.appendChild(flagRow("Google review", customer.household && customer.household.googleReview));
+ propCol.appendChild(el("div", null, (customer.property && customer.property.address) || "(no address)"));
+ propCol.appendChild(el("div", null, (customer.property && customer.property.postalCode) || ""));
+ propCol.appendChild(el("div", null, customer.property && customer.property.assignedTeam ? "Team: " + customer.property.assignedTeam : "No team assigned"));
+ }
 
-    filtered.forEach(function (t) {
-      var row = el("div", "thread-row");
-      row.dataset.conversationId = t.conversationId;
-      if (t.conversationId === state.activeConversationId) row.classList.add("active");
+ function updateThreadPreview(m) {
+ var existing = state.threads.find(function (t) { return t.conversationId === m.conversation_id; });
+ if (!existing) return true;
+ existing.lastText = m.text;
+ existing.lastDirection = m.direction;
+ existing.lastTimestamp = m.timestamp;
+ if (m.direction === "inbound" && m.conversation_id !== state.activeConversationId) {
+ existing.unreadCount = (existing.unreadCount || 0) + 1;
+ }
+ return false;
+ }
 
-      var avatar = el("div", "avatar channel-" + t.channel, initials(t.name));
-      row.appendChild(avatar);
+ var composeInput = document.getElementById("compose-input");
+ var composeSend = document.getElementById("compose-send");
+ var composeError = document.getElementById("compose-error");
 
-      var main = el("div", "thread-main");
-      var topLine = el("div", "thread-top-line");
-      topLine.appendChild(el("div", "thread-name", t.name));
-      topLine.appendChild(el("div", "thread-time", fmtTime(t.lastTimestamp)));
-      main.appendChild(topLine);
+ function setComposeBusy(busy) {
+ composeInput.disabled = busy;
+ composeSend.disabled = busy;
+ }
 
-      var bottomLine = el("div", "thread-bottom-line");
-      var previewPrefix = t.lastDirection === "outbound" ? "" : "";
-      bottomLine.appendChild(el("div", "thread-preview", previewPrefix + (t.lastText || "")));
+ function sendCompose() {
+ var text = composeInput.value.trim();
+ if (!text || !state.activeConversationId) return;
+ composeError.style.display = "none";
+ setComposeBusy(true);
+ fetch("/api/send", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({ conversationId: state.activeConversationId, text: text }),
+ }).then(function (r) {
+ return r.json().then(function (data) {
+ if (!r.ok || !data.ok) throw new Error(data.error || ("HTTP " + r.status));
+ return data;
+ });
+ }).then(function (data) {
+ composeInput.value = "";
+ composeInput.style.height = "auto";
+ if (data.message.conversation_id === state.activeConversationId) {
+ appendMessage(data.message);
+ var scroll = document.getElementById("message-scroll");
+ if (scroll) scroll.scrollTop = scroll.scrollHeight;
+ }
+ updateThreadPreview(data.message);
+ state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+ renderThreadList();
+ state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+ }).catch(function (err) {
+ console.error("[ui] send failed:", err);
+ composeError.textContent = "Failed to send — try again.";
+ composeError.style.display = "block";
+ }).finally(function () {
+ setComposeBusy(false);
+ composeInput.focus();
+ });
+ }
 
-      var badges = el("div", "thread-badges");
-      if (t.unreadCount > 0) badges.appendChild(el("div", "unread-dot"));
-      var chanPill = el("span", "pill channel-" + t.channel, t.channel === "whatsapp" ? "WhatsApp" : "Telegram");
-      badges.appendChild(chanPill);
-      var statusClass = statusPillClass(t.status);
-      if (statusClass) badges.appendChild(el("span", "pill " + statusClass, t.status));
-      bottomLine.appendChild(badges);
-      main.appendChild(bottomLine);
+ composeSend.addEventListener("click", sendCompose);
+ composeInput.addEventListener("keydown", function (e) {
+ if (e.key === "Enter" && !e.shiftKey) {
+ e.preventDefault();
+ sendCompose();
+ }
+ });
+ composeInput.addEventListener("input", function () {
+ composeInput.style.height = "auto";
+ composeInput.style.height = Math.min(composeInput.scrollHeight, 120) + "px";
+ });
 
-      row.appendChild(main);
-      row.addEventListener("click", function () { openThread(t); });
-      list.appendChild(row);
-    });
-  }
+ document.getElementById("toggle-customer-panel").addEventListener("click", function () {
+ var panel = document.getElementById("customer-panel");
+ panel.classList.toggle("open");
+ this.classList.toggle("toggled");
+ });
+ document.getElementById("toggle-cal-panel").addEventListener("click", function () {
+ document.getElementById("cal-col").classList.toggle("collapsed");
+ this.classList.toggle("toggled");
+ });
+ document.getElementById("thread-search").addEventListener("input", renderThreadList);
 
-  // ── Chat panel ───────────────────────────────────────────────────────────
-  function openThread(thread) {
-    state.activeConversationId = thread.conversationId;
-    state.activeContactId = thread.contactId;
-    renderThreadList();
+ var DOW = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+ function sgtDateStr(d) { return d.toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" }); }
 
-    document.getElementById("chat-header").style.display = "flex";
-    document.getElementById("compose-bar").style.display = "flex";
-    document.getElementById("chat-avatar").className = "avatar channel-" + thread.channel;
-    document.getElementById("chat-avatar").textContent = initials(thread.name);
-    var nameEl = document.getElementById("chat-header-name");
-    nameEl.innerHTML = "";
-    nameEl.appendChild(document.createTextNode(thread.name + " "));
-    var statusClass = statusPillClass(thread.status);
-    if (statusClass) nameEl.appendChild(el("span", "pill " + statusClass, thread.status));
-    document.getElementById("chat-header-sub").textContent =
-      (thread.channel === "whatsapp" ? "WhatsApp" : "Telegram") + (thread.phone ? " · " + thread.phone : "");
+ function renderCalMonth() {
+ var grid = document.getElementById("cal-grid");
+ grid.innerHTML = "";
+ DOW.forEach(function (d) { grid.appendChild(el("div", "cal-dow", d)); });
+ var year = state.calMonth.getFullYear();
+ var month = state.calMonth.getMonth();
+ document.getElementById("cal-month-label").textContent = state.calMonth.toLocaleDateString([], { month: "long", year: "numeric" });
+ var firstDow = new Date(year, month, 1).getDay();
+ var daysInMonth = new Date(year, month + 1, 0).getDate();
+ var todayStr = sgtDateStr(new Date());
+ for (var i = 0; i < firstDow; i++) grid.appendChild(el("div", "cal-day empty"));
+ for (var day = 1; day <= daysInMonth; day++) {
+ var dateObj = new Date(year, month, day);
+ var dateStr = sgtDateStr(dateObj);
+ var cell = el("div", "cal-day");
+ cell.textContent = String(day);
+ if (dateStr === todayStr) cell.classList.add("today");
+ if (dateStr === state.calSelectedDate) cell.classList.add("selected");
+ cell.addEventListener("click", (function (ds) {
+ return function () { state.calSelectedDate = ds; renderCalMonth(); loadCalDay(ds); };
+ })(dateStr));
+ grid.appendChild(cell);
+ }
+ }
 
-    loadMessages(thread.conversationId);
-    loadCustomer(thread);
-  }
+ function loadCalDay(dateStr) {
+ var listEl = document.getElementById("cal-jobs-list");
+ document.getElementById("cal-jobs-heading").textContent = "Jobs — " + dateStr;
+ listEl.innerHTML = "Loading…";
+ fetchJson("/api/calendar?date=" + encodeURIComponent(dateStr)).then(function (data) {
+ var events = data.events || [];
+ listEl.innerHTML = "";
+ if (events.length === 0) { var empty = el("div", null, "No jobs scheduled."); empty.id = "cal-jobs-empty"; listEl.appendChild(empty); return; }
+ events.forEach(function (ev) {
+ var card = el("div", "cal-job");
+ var timeStr = ev.start ? new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+ card.appendChild(el("div", "cal-job-time", timeStr + " — " + (ev.customerName || ev.contactId || "Unknown")));
+ var svc = [ev.serviceType, ev.units ? "×" + ev.units : null].filter(Boolean).join(" ");
+ if (svc) card.appendChild(el("div", null, svc));
+ card.appendChild(el("div", "cal-job-team", ev.team || ""));
+ listEl.appendChild(card);
+ });
+ }).catch(function (err) { console.error("[ui] failed to load calendar day:", err); listEl.textContent = "Failed to load."; });
+ }
 
-  function loadMessages(conversationId) {
-    return fetchJson("/api/messages?conversationId=" + encodeURIComponent(conversationId)).then(function (data) {
-      renderMessages(data.messages || []);
-      var t = state.threads.find(function (x) { return x.conversationId === conversationId; });
-      if (t) { t.unreadCount = 0; renderThreadList(); }
-    }).catch(function (err) {
-      console.error("[ui] failed to load messages:", err);
-    });
-  }
+ document.getElementById("cal-prev").addEventListener("click", function () { state.calMonth = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth() - 1, 1); renderCalMonth(); });
+ document.getElementById("cal-next").addEventListener("click", function () { state.calMonth = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth() + 1, 1); renderCalMonth(); });
 
-  function bubbleTypeFor(msg) {
-    if (msg.direction === "inbound") return { cls: "type-inbound", align: "align-left" };
-    if (msg.message_type === "direct") return { cls: "type-outbound-direct", align: "align-right" };
-    if (msg.message_type === "bot-cmd") return { cls: "type-bot-cmd", align: "align-right" };
-    return { cls: "type-bot-resp", align: "align-center" };
-  }
+ function poll() {
+ fetchJson("/api/updates?since=" + state.lastUpdateSince).then(function (data) {
+ state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+ var messages = data.messages || [];
+ if (messages.length === 0) return;
+ var threadsNeedReload = false;
+ messages.forEach(function (m) {
+ if (m.conversation_id === state.activeConversationId) { appendMessage(m); var scroll = document.getElementById("message-scroll"); if (scroll) scroll.scrollTop = scroll.scrollHeight; }
+ if (updateThreadPreview(m)) threadsNeedReload = true;
+ });
+ if (threadsNeedReload) { loadThreads(); } else { state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); }); renderThreadList(); }
+ }).catch(function (err) { console.error("[ui] poll failed:", err); }).finally(function () { setTimeout(poll, 3000); });
+ }
 
-  function renderMessages(messages) {
-    var scroll = document.getElementById("message-scroll");
-    scroll.innerHTML = "";
-    if (messages.length === 0) {
-      scroll.appendChild(el("div", null, "No messages yet."));
-      scroll.firstChild.id = "message-empty";
-      return;
-    }
-    messages.forEach(function (m) { scroll.appendChild(renderBubble(m)); });
-    scroll.scrollTop = scroll.scrollHeight;
-  }
-
-  function appendMessage(m) {
-    var scroll = document.getElementById("message-scroll");
-    var emptyEl = document.getElementById("message-empty");
-    if (emptyEl) emptyEl.remove();
-    scroll.appendChild(renderBubble(m));
-    scroll.scrollTop = scroll.scrollHeight;
-  }
-
-  function renderBubble(m) {
-    var t = bubbleTypeFor(m);
-    var row = el("div", "bubble-row " + t.align);
-    var bubble = el("div", "bubble " + t.cls);
-    if (t.cls === "type-bot-cmd") bubble.appendChild(el("div", "bubble-label", "via bot"));
-    bubble.appendChild(document.createTextNode(m.text || ""));
-    bubble.appendChild(el("div", "bubble-time", fmtTime(m.timestamp)));
-    row.appendChild(bubble);
-    return row;
-  }
-
-  // ── Customer info panel ─────────────────────────────────────────────────
-  function loadCustomer(thread) {
-    var qs = thread.contactId
-      ? "contactId=" + encodeURIComponent(thread.contactId)
-      : "conversationId=" + encodeURIComponent(thread.conversationId);
-    fetchJson("/api/customer?" + qs).then(function (data) {
-      renderCustomer(data.customer);
-    }).catch(function (err) {
-      console.error("[ui] failed to load customer:", err);
-    });
-  }
-
-  function flagRow(label, value) {
-    var row = el("div");
-    row.appendChild(document.createTextNode(label + ": "));
-    var mark = el("span", value ? "flag-yes" : "flag-no", value ? "✓" : "–");
-    row.appendChild(mark);
-    return row;
-  }
-
-  function renderCustomer(customer) {
-    var jobsCol = document.getElementById("customer-col-jobs");
-    var houseCol = document.getElementById("customer-col-household");
-    var propCol = document.getElementById("customer-col-property");
-    jobsCol.innerHTML = "<h3>Job History</h3>";
-    houseCol.innerHTML = "<h3>Household</h3>";
-    propCol.innerHTML = "<h3>Property</h3>";
-
-    if (!customer) {
-      jobsCol.appendChild(el("div", null, "No customer record."));
-      return;
-    }
-
-    jobsCol.appendChild(el("div", null, customer.jobs.lastJobDate
-      ? "Last: " + customer.jobs.lastJobDate + " · " + (customer.jobs.lastJobService || "") + " ×" + (customer.jobs.lastJobUnits || "?")
-      : "No jobs yet."));
-    jobsCol.appendChild(el("div", null, "Total jobs: " + customer.jobs.totalJobs));
-
-    houseCol.appendChild(flagRow("Elderly", customer.household.elderly));
-    houseCol.appendChild(flagRow("Children", customer.household.children));
-    houseCol.appendChild(flagRow("Pets", customer.household.pets));
-    houseCol.appendChild(flagRow("Google review", customer.household.googleReview));
-
-    propCol.appendChild(el("div", null, customer.property.address || "(no address)"));
-    propCol.appendChild(el("div", null, customer.property.postalCode || ""));
-    propCol.appendChild(el("div", null, customer.property.assignedTeam ? "Team: " + customer.property.assignedTeam : "No team assigned"));
-  }
-
-  // ── Compose (Path A: plain-text send) ───────────────────────────────────
-  function updateThreadPreview(m) {
-    var existing = state.threads.find(function (t) { return t.conversationId === m.conversation_id; });
-    if (!existing) return true;
-    existing.lastText = m.text;
-    existing.lastDirection = m.direction;
-    existing.lastTimestamp = m.timestamp;
-    if (m.direction === "inbound" && m.conversation_id !== state.activeConversationId) {
-      existing.unreadCount = (existing.unreadCount || 0) + 1;
-    }
-    return false;
-  }
-
-  var composeInput = document.getElementById("compose-input");
-  var composeSend = document.getElementById("compose-send");
-  var composeError = document.getElementById("compose-error");
-
-  function setComposeBusy(busy) {
-    composeInput.disabled = busy;
-    composeSend.disabled = busy;
-  }
-
-  function sendCompose() {
-    var text = composeInput.value.trim();
-    if (!text || !state.activeConversationId) return;
-    composeError.style.display = "none";
-    setComposeBusy(true);
-    fetch("/api/send", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: state.activeConversationId, text: text }),
-    }).then(function (r) {
-      return r.json().then(function (data) {
-        if (!r.ok || !data.ok) throw new Error(data.error || ("HTTP " + r.status));
-        return data;
-      });
-    }).then(function (data) {
-      composeInput.value = "";
-      composeInput.style.height = "auto";
-      if (data.message.conversation_id === state.activeConversationId) {
-        appendMessage(data.message);
-      }
-      updateThreadPreview(data.message);
-      state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
-      renderThreadList();
-      state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
-    }).catch(function (err) {
-      console.error("[ui] send failed:", err);
-      composeError.textContent = "Failed to send — try again.";
-      composeError.style.display = "block";
-    }).finally(function () {
-      setComposeBusy(false);
-      composeInput.focus();
-    });
-  }
-
-  composeSend.addEventListener("click", sendCompose);
-  composeInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendCompose();
-    }
-  });
-  composeInput.addEventListener("input", function () {
-    composeInput.style.height = "auto";
-    composeInput.style.height = Math.min(composeInput.scrollHeight, 120) + "px";
-  });
-
-  // ── Panel toggles ────────────────────────────────────────────────────────
-  document.getElementById("toggle-customer-panel").addEventListener("click", function () {
-    var panel = document.getElementById("customer-panel");
-    panel.classList.toggle("open");
-    this.classList.toggle("toggled");
-  });
-  document.getElementById("toggle-cal-panel").addEventListener("click", function () {
-    document.getElementById("cal-col").classList.toggle("collapsed");
-    this.classList.toggle("toggled");
-  });
-
-  document.getElementById("thread-search").addEventListener("input", renderThreadList);
-
-  // ── Calendar panel ───────────────────────────────────────────────────────
-  var DOW = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-
-  function sgtDateStr(d) {
-    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" });
-  }
-
-  function renderCalMonth() {
-    var grid = document.getElementById("cal-grid");
-    grid.innerHTML = "";
-    DOW.forEach(function (d) { grid.appendChild(el("div", "cal-dow", d)); });
-
-    var year = state.calMonth.getFullYear();
-    var month = state.calMonth.getMonth();
-    document.getElementById("cal-month-label").textContent =
-      state.calMonth.toLocaleDateString([], { month: "long", year: "numeric" });
-
-    var firstDow = new Date(year, month, 1).getDay();
-    var daysInMonth = new Date(year, month + 1, 0).getDate();
-    var todayStr = sgtDateStr(new Date());
-
-    for (var i = 0; i < firstDow; i++) grid.appendChild(el("div", "cal-day empty"));
-
-    for (var day = 1; day <= daysInMonth; day++) {
-      var dateObj = new Date(year, month, day);
-      var dateStr = sgtDateStr(dateObj);
-      var cell = el("div", "cal-day");
-      cell.textContent = String(day);
-      if (dateStr === todayStr) cell.classList.add("today");
-      if (dateStr === state.calSelectedDate) cell.classList.add("selected");
-      cell.addEventListener("click", (function (ds, cellEl) {
-        return function () {
-          state.calSelectedDate = ds;
-          renderCalMonth();
-          loadCalDay(ds);
-        };
-      })(dateStr, cell));
-      grid.appendChild(cell);
-    }
-  }
-
-  function loadCalDay(dateStr) {
-    var listEl = document.getElementById("cal-jobs-list");
-    document.getElementById("cal-jobs-heading").textContent = "Jobs — " + dateStr;
-    listEl.innerHTML = "Loading…";
-    fetchJson("/api/calendar?date=" + encodeURIComponent(dateStr)).then(function (data) {
-      var events = data.events || [];
-      listEl.innerHTML = "";
-      if (events.length === 0) {
-        listEl.appendChild(el("div", null, "No jobs scheduled."));
-        listEl.firstChild.id = "cal-jobs-empty";
-        return;
-      }
-      events.forEach(function (ev) {
-        var card = el("div", "cal-job");
-        var timeStr = ev.start ? new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
-        card.appendChild(el("div", "cal-job-time", timeStr + " — " + (ev.customerName || ev.contactId || "Unknown")));
-        var svc = [ev.serviceType, ev.units ? "×" + ev.units : null].filter(Boolean).join(" ");
-        if (svc) card.appendChild(el("div", null, svc));
-        card.appendChild(el("div", "cal-job-team", ev.team || ""));
-        listEl.appendChild(card);
-      });
-    }).catch(function (err) {
-      console.error("[ui] failed to load calendar day:", err);
-      listEl.textContent = "Failed to load.";
-    });
-  }
-
-  document.getElementById("cal-prev").addEventListener("click", function () {
-    state.calMonth = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth() - 1, 1);
-    renderCalMonth();
-  });
-  document.getElementById("cal-next").addEventListener("click", function () {
-    state.calMonth = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth() + 1, 1);
-    renderCalMonth();
-  });
-
-  // ── Live updates (long-poll) ────────────────────────────────────────────
-  function poll() {
-    fetchJson("/api/updates?since=" + state.lastUpdateSince).then(function (data) {
-      state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
-      var messages = data.messages || [];
-      if (messages.length === 0) return;
-
-      var threadsNeedReload = false;
-      messages.forEach(function (m) {
-        if (m.conversation_id === state.activeConversationId) {
-          appendMessage(m);
-        }
-        if (updateThreadPreview(m)) threadsNeedReload = true;
-      });
-
-      if (threadsNeedReload) {
-        loadThreads();
-      } else {
-        state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
-        renderThreadList();
-      }
-    }).catch(function (err) {
-      console.error("[ui] poll failed:", err);
-    }).finally(function () {
-      setTimeout(poll, 3000);
-    });
-  }
-
-  // ── Init ─────────────────────────────────────────────────────────────────
-  state.lastUpdateSince = Date.now();
-  loadThreads();
-  renderCalMonth();
-  setTimeout(poll, 3000);
+ state.lastUpdateSince = Date.now();
+ loadThreads();
+ renderCalMonth();
+ setTimeout(poll, 3000);
 })();
 </script>
 </body>

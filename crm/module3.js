@@ -77,8 +77,8 @@ export async function cleanQueueStaleAndExpired(
  for (const { tpl, offsetDays } of parsedTemplates) {
  tplMap.set(tpl.Template_ID, { anchor: 'C', offsetDays });
  }
- for (const { tpl, offsetDays } of lTemplates) {
- tplMap.set(tpl.Template_ID, { anchor: 'L', offsetDays });
+ for (const { tpl, offsetHours } of lTemplates) {
+ tplMap.set(tpl.Template_ID, { anchor: 'L', offsetHours });
  }
 
  const contactMap = new Map(contacts.map(c => [c.Contact_ID, c]));
@@ -110,11 +110,12 @@ export async function cleanQueueStaleAndExpired(
  staleCount++;
  }
  } else if (tplInfo.anchor === 'L') {
- const createdDate = (contact.Created_Date || '').slice(0, 10);
- const daysSinceCreated = createdDate ? dateDiffDays(createdDate, todaySGT) : -1;
+ // L-anchor eligibility is "hoursSinceCreated >= offsetHours" (see runDailyReminderSweep),
+ // not an exact match — once true it stays true, so elapsed-time alone never makes a
+ // queued L-anchor entry stale. The only real staleness signal left is a completed job.
  const hasCompletedJob = contactsWithCompletedJob.has(contact.Contact_ID);
- if (daysSinceCreated !== tplInfo.offsetDays || hasCompletedJob) {
- reason = `stale (L-anchor: daysSinceCreated=${daysSinceCreated}, expected=${tplInfo.offsetDays}, hasCompletedJob=${hasCompletedJob})`;
+ if (hasCompletedJob) {
+ reason = `stale (L-anchor: hasCompletedJob=${hasCompletedJob})`;
  staleCount++;
  }
  }
@@ -161,7 +162,7 @@ export async function detectAndMarkCompletedJobs() {
  const lastJobMap = new Map();
 
  for (const job of toProcess) {
- stry {
+ try {
  await updateJob(job.Job_ID, { Completed_At: now });
 
  if (job.Contact_ID) {
@@ -226,7 +227,7 @@ export async function detectAndMarkCompletedJobs() {
  return { processed: toProcess.length, results };
 }
 
-// ─── runDailyReminderSweep ────────────────────────────────────────────────────────
+// ─── runDailyReminderSweep ────────────────────────────────────────────────────
 
 export async function runDailyReminderSweep() {
  const todaySGT = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
@@ -262,13 +263,13 @@ export async function runDailyReminderSweep() {
  for (const tpl of scheduledTemplates) {
  const parsed = parseStep(tpl.Step || '');
  if (!parsed || parsed.anchor !== 'L') continue;
- let offsetDays;
+ let offsetHours;
  if (parsed.unit === 'D') {
- offsetDays = parsed.offsetDays;
+ offsetHours = parsed.offsetDays * 24;
  } else if (parsed.unit === 'HR') {
- offsetDays = Math.floor(parsed.offsetDays / 24);
+ offsetHours = parsed.offsetDays;
  } else continue;
- lTemplates.push({ tpl, offsetDays });
+ lTemplates.push({ tpl, offsetHours });
  }
 
  if (parsedTemplates.length === 0 && lTemplates.length === 0) {
@@ -355,15 +356,17 @@ export async function runDailyReminderSweep() {
  }
  }
 
- for (const { tpl, offsetDays } of lTemplates) {
+ for (const { tpl, offsetHours } of lTemplates) {
  for (const contact of contacts) {
  if (contact.Opt_Out === 'TRUE') continue;
  if (!contact.Created_Date || !contact.Created_Date.trim()) continue;
  if (contactsWithCompletedJob.has(contact.Contact_ID)) continue;
  pairsChecked++;
 
- const daysSinceCreated = dateDiffDays(contact.Created_Date.slice(0, 10), todaySGT);
- if (daysSinceCreated !== offsetDays) continue;
+ // Compare hours since created for HR-unit templates
+ const createdMs = new Date(contact.Created_Date).getTime();
+ const hoursSinceCreated = Math.floor((Date.now() - createdMs) / (1000 * 60 * 60));
+ if (hoursSinceCreated < offsetHours) continue;
 
  const isDuplicate = queue.some(
  q => q.Contact_ID === contact.Contact_ID && q.Template_ID === tpl.Template_ID
@@ -400,7 +403,7 @@ export async function runDailyReminderSweep() {
  Channel: queueChannel,
  Draft_Text: draftText,
  });
- console.log(`[module3] queued ${tpl.Template_ID} for ${contact.Contact_ID} (${daysSinceCreated} days since created)`);
+ console.log(`[module3] queued ${tpl.Template_ID} for ${contact.Contact_ID} (${hoursSinceCreated} hours since created)`);
  }
  draftsGenerated++;
  }
@@ -427,7 +430,7 @@ export async function runDailyReminderSweep() {
  return { skipped: false, draftsGenerated, pairsChecked };
 }
 
-// ─── pollTechnicianSubmissions ──────────────────────────────────────────────────────
+// ─── pollTechnicianSubmissions ────────────────────────────────────────────────
 
 export async function pollTechnicianSubmissions() {
   const DRIVE_CREDS_PATH = '/home/ubuntu/.openclaw/workspace/.openclaw/secrets/gsheets-credentials.json';
@@ -611,4 +614,3 @@ export async function pollTechnicianSubmissions() {
   console.log(`[module3] pollTechnicianSubmissions: done — processed=${processedCount}, errors=${errorCount}`);
   return { processed: processedCount, errors: errorCount };
 }
-

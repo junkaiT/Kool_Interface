@@ -1,3 +1,5 @@
+import * as db from './db.js';
+
 /**
  * whatsapp.js — WhatsApp Cloud API helpers for KoolAircon CRM
  *
@@ -8,8 +10,6 @@
  * WHATSAPP_ACCESS_TOKEN: set via process.env (injected by supervisord).
  * WHATSAPP_VERIFY_TOKEN: paste this value into Meta's developer console once.
  */
-
-import * as db from './db.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,6 @@ export async function sendWhatsApp(to, text, messageType = 'bot-resp') {
     );
   }
 
-  console.log("[whatsapp] Message sent:", JSON.stringify(json));
   await db.insert({
     conversation_id: String(to),
     channel: 'whatsapp',
@@ -91,6 +90,7 @@ export async function sendWhatsApp(to, text, messageType = 'bot-resp') {
     text,
     sender: 'operator',
   }).catch(e => console.error('[whatsapp] db log failed:', e.message));
+  console.log("[whatsapp] Message sent:", JSON.stringify(json));
   return json;
 }
 
@@ -390,4 +390,3 @@ export async function registerWhatsAppTemplate(waTemplateName, bodyText) {
 
 // ─── Fallback phone number ID constant ───────────────────────────────────────
 const WHATSAPP_PHONE_NUMBER_ID = '1261834007009399';
-

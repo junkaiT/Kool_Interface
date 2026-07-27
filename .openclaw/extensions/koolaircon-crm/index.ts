@@ -26,6 +26,8 @@ import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
 import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
+import { listEvents } from "../../../crm/calendar.js";
+import { getTeamCalendars } from "../../../crm/scheduler.js";
 import { pollTechnicianSubmissions } from "../../../crm/module3.js";
 import { handleSendPhotosCommand, isPhotoYesReply } from "../../../crm/crm.js";
 import { broadcastToUI } from "../../../crm/broadcast.js";
@@ -75,62 +77,49 @@ const UI_HTML_PATH = join(__dirname, "../../../crm/ui.html");
 let syncInFlight = false;
 let sweepRanToday = ''; // tracks the date the sweep last ran in-process
 
-// Resolves a command result's inboxId/contactId to the customer's channel-native
-// id (Telegram chat id or WhatsApp number) so command-result rows land in the
-// same messages.db thread as everything else for that customer — matching the
-// conversation_id convention every other db.insert() call site already uses
-// (see db.js's header comment). Falls back to the raw id string only if no
-// contact record resolves, so nothing is silently dropped.
+
+// Wraps api.registerCommand so every command reply also reaches the browser UI
 async function persistCommandResult(result: any) {
-  if (!result || typeof result.text !== "string") return;
-  const rawId = result.contactId || result.inboxId;
-  if (!rawId) return;
-  try {
-    const contacts = await getContacts();
-    let contact: any = null;
-    if (result.contactId) {
-      contact = contacts.find((c: any) => c.Contact_ID === result.contactId);
-    } else if (result.inboxId) {
-      const inboxRow = await findInboxById(result.inboxId);
-      if (inboxRow) contact = contacts.find((c: any) => c.Contact_ID === inboxRow.row.Contact_ID);
-    }
-    const conversationId = contact?.Channel_Contact_ID || rawId;
-    const channel = (contact?.Source || "").includes("WhatsApp") ? "whatsapp" : "telegram";
-    await db.insert({
-      conversation_id: String(conversationId),
-      channel,
-      direction: "outbound",
-      message_type: "bot-resp",
-      text: result.text,
-      sender: "operator",
-    });
-  } catch (e) {
-    console.error("[index] command-result db log failed:", e instanceof Error ? e.message : String(e));
-  }
+ if (!result || typeof result.text !== 'string') return;
+ const rawId = result.contactId || result.inboxId;
+ if (!rawId) return;
+ try {
+ const contacts = await getContacts();
+ let contact: any = null;
+ if (result.contactId) {
+ contact = contacts.find((c: any) => c.Contact_ID === result.contactId);
+ } else if (result.inboxId) {
+ const inboxRow = await findInboxById(result.inboxId);
+ if (inboxRow) contact = contacts.find((c: any) => c.Contact_ID === inboxRow.row.Contact_ID);
+ }
+ const conversationId = contact?.Channel_Contact_ID || rawId;
+ const channel = (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+ await db.insert({
+ conversation_id: String(conversationId),
+ channel,
+ direction: 'outbound',
+ message_type: 'bot-resp',
+ text: result.text,
+ sender: 'operator',
+ });
+ } catch (e) {
+ console.error('[index] command-result db log failed:', e instanceof Error ? e.message : String(e));
+ }
 }
 
-// Wraps api.registerCommand so every command's { text } reply also reaches the
-// browser UI via broadcastToUI, and is persisted to messages.db (long-poll's
-// only data source until Phase 3b's WebSocket exists) — Phase 2's notifyFn
-// threading covers the handlers that message the operator directly
-// (handleBookingCommand, handleConfirmSlot); this covers the rest, whose
-// replies flow back through the command framework's own return-value
-// mechanism instead (e.g. /calinfo).
 function registerUICommand(api: any, config: any) {
-  const originalHandler = config.handler;
-  api.registerCommand({
-    ...config,
-    handler: async (...args: any[]) => {
-      const result = await originalHandler(...args);
-      if (result && typeof result.text === "string") {
-        broadcastToUI({ type: "command-result", text: result.text, timestamp: Date.now() });
-        persistCommandResult(result).catch((e: unknown) =>
-          console.error("[index] persistCommandResult failed:", e instanceof Error ? e.message : String(e))
-        );
-      }
-      return result;
-    },
-  });
+ const originalHandler = config.handler;
+ api.registerCommand({
+ ...config,
+ handler: async (...args: any[]) => {
+ const result = await originalHandler(...args);
+ if (result && typeof result.text === 'string') {
+ broadcastToUI({ type: 'command-result', text: result.text, timestamp: Date.now() });
+ await persistCommandResult(result);
+ }
+ return result;
+ },
+ });
 }
 
 export default definePluginEntry({
@@ -962,299 +951,220 @@ export default definePluginEntry({
       },
     });
 
-    // ── KoolAircon CRM web interface (Phase 3 — long-poll, no WebSocket yet) ───
-    // UI_PASSWORD is a single shared password (env var, set via supervisord
-    // environment=). No user accounts — checked against every request below.
-    // Note on dynamic segments: /booking/slots and /webhook/whatsapp are the
-    // only proven registerHttpRoute patterns available (a literal path with
-    // match: 'exact', dynamic values taken from the query string) — there's
-    // no confirmed :param/prefix-matching support, so routes that the spec
-    // describes as e.g. /api/messages/:contactId are registered here as
-    // /api/messages?contactId=... instead, deliberately avoiding the same
-    // class of unverified-framework-behavior risk the WebSocket probe just
-    // caught. These are stubs; Phase 4/5 fill in real logic.
+
     function requireUIAuth(req: any, res: any): boolean {
-      const UI_PASSWORD = process.env.UI_PASSWORD;
-      const sendUnauthorized = () => {
-        res.writeHead(401, {
-          'Content-Type': 'application/json',
-          'WWW-Authenticate': 'Basic realm="KoolAircon CRM"',
-        });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-      };
-      if (!UI_PASSWORD) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'UI_PASSWORD not configured on server' }));
-        return false;
-      }
-      const authHeader = String(req.headers['authorization'] || '');
-      const match = authHeader.match(/^Basic\s+(.+)$/);
-      let password = '';
-      if (match) {
-        try {
-          const decoded = Buffer.from(match[1], 'base64').toString('utf8');
-          password = decoded.slice(decoded.indexOf(':') + 1);
-        } catch { /* malformed header — password stays empty, falls through to 401 */ }
-      }
-      if (password !== UI_PASSWORD) {
-        sendUnauthorized();
-        return false;
-      }
-      return true;
-    }
+ const UI_PASSWORD = process.env.UI_PASSWORD;
+ const sendUnauthorized = () => {
+ res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Basic realm="KoolAircon CRM"' });
+ res.end(JSON.stringify({ error: 'Unauthorized' }));
+ };
+ if (!UI_PASSWORD) {
+ res.writeHead(500, { 'Content-Type': 'application/json' });
+ res.end(JSON.stringify({ error: 'UI_PASSWORD not configured on server' }));
+ return false;
+ }
+ const authHeader = String(req.headers['authorization'] || '');
+ const match = authHeader.match(/^Basic\s+(.+)$/);
+ let password = '';
+ if (match) {
+ try { const decoded = Buffer.from(match[1], 'base64').toString('utf8'); password = decoded.slice(decoded.indexOf(':') + 1); } catch { }
+ }
+ if (password !== UI_PASSWORD) { sendUnauthorized(); return false; }
+ return true;
+ }
 
-    function sendUIJson(res: any, statusCode: number, data: any) {
-      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data));
-    }
+ function sendUIJson(res: any, statusCode: number, data: any) {
+ res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+ res.end(JSON.stringify(data));
+ }
 
-    // ── GET /ui — serves crm/ui.html ────────────────────────────────────────────
-    // Read fresh on every request (not cached at module load) so the file can be
-    // hot-edited on the server without a gateway restart.
-    api.registerHttpRoute({
-      path: '/ui',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const html = readFileSync(UI_HTML_PATH, 'utf8');
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(html);
-        } catch (err) {
-          api.logger.error('[ui] /ui error:', err instanceof Error ? err.message : String(err));
-          res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Failed to load interface.');
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/ui', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ try {
+ const html = readFileSync(UI_HTML_PATH, 'utf8');
+ res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+ res.end(html);
+ } catch (err) {
+ res.writeHead(500, { 'Content-Type': 'text/plain' });
+ res.end('ui.html not found on server');
+ }
+ return true;
+ }});
 
-    // ── GET /api/updates?since=<timestamp> — long-poll endpoint ────────────────
-    api.registerHttpRoute({
-      path: '/api/updates',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const urlObj = new URL(req.url, 'http://localhost');
-          const since = parseInt(urlObj.searchParams.get('since') || '0', 10) || 0;
-          const messages = await db.getMessagesSince(since);
-          sendUIJson(res, 200, { messages, now: Date.now() });
-        } catch (err) {
-          api.logger.error('[ui] /api/updates error:', err instanceof Error ? err.message : String(err));
-          sendUIJson(res, 500, { error: 'Failed to fetch updates.' });
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/updates', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ try {
+ const urlObj = new URL(req.url, 'http://localhost');
+ const since = parseInt(urlObj.searchParams.get('since') || '0', 10) || 0;
+ const messages = await db.getMessagesSince(since);
+ sendUIJson(res, 200, { messages, now: Date.now() });
+ } catch (err) {
+ sendUIJson(res, 500, { error: 'Failed to fetch updates.' });
+ }
+ return true;
+ }});
 
-    // ── GET /api/threads — one row per SQLite conversation_id, joined to contacts ─
-    api.registerHttpRoute({
-      path: '/api/threads',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const summaries = await db.getThreadSummaries();
-          const contacts = await getContacts();
-          const threads = summaries.map((s: any) => {
-            const contact = contacts.find((c: any) => c.Channel_Contact_ID === s.conversation_id);
-            return {
-              contactId: contact?.Contact_ID || null,
-              conversationId: s.conversation_id,
-              channel: s.channel,
-              name: contact?.Full_Name || s.conversation_id,
-              status: contact?.Contact_Status || '',
-              phone: contact?.Phone || '',
-              lastText: s.last_text,
-              lastDirection: s.last_direction,
-              lastTimestamp: s.last_timestamp,
-              unreadCount: s.unread_count,
-            };
-          });
-          sendUIJson(res, 200, { threads });
-        } catch (err) {
-          api.logger.error('[ui] /api/threads error:', err instanceof Error ? err.message : String(err));
-          sendUIJson(res, 500, { error: 'Failed to fetch threads.' });
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/threads', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ try {
+ const summaries = await db.getThreadSummaries();
+ const contacts = await getContacts();
+ const threads = summaries.map((s: any) => {
+ const contact = contacts.find((c: any) => c.Channel_Contact_ID === s.conversation_id);
+ return {
+ conversationId: s.conversation_id,
+ contactId: contact?.Contact_ID || null,
+ name: contact?.Full_Name || s.conversation_id,
+ channel: s.channel || 'telegram',
+ status: contact?.Contact_Status || '',
+ lastText: s.last_text || '',
+ lastDirection: s.last_direction || '',
+ lastTimestamp: s.last_timestamp || 0,
+ unreadCount: s.unread_count || 0,
+ };
+ });
+ sendUIJson(res, 200, { threads });
+ } catch (err) {
+ api.logger.error('[ui] /api/threads error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 500, { error: 'Failed to fetch threads.' });
+ }
+ return true;
+ }});
 
-    // ── GET /api/messages?conversationId=...  (or ?contactId=... as a fallback) ─
-    // Uses conversationId directly where possible — it's the actual SQLite key
-    // and every thread from /api/threads has one, whereas contactId is only
-    // present when a 1_Contacts row matched (not guaranteed — e.g. self-test
-    // conversations). contactId is still accepted and resolved via the contacts
-    // sheet for callers that only have that.
-    api.registerHttpRoute({
-      path: '/api/messages',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const urlObj = new URL(req.url, 'http://localhost');
-          let conversationId = urlObj.searchParams.get('conversationId') || '';
-          const contactId = urlObj.searchParams.get('contactId') || '';
-          if (!conversationId && contactId) {
-            const contacts = await getContacts();
-            const contact = contacts.find((c: any) => c.Contact_ID === contactId);
-            conversationId = contact?.Channel_Contact_ID || '';
-          }
-          if (!conversationId) {
-            sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
-            return true;
-          }
-          const messages = await db.getMessagesByConversation(conversationId);
-          await db.markConversationRead(conversationId);
-          sendUIJson(res, 200, { conversationId, contactId, messages });
-        } catch (err) {
-          api.logger.error('[ui] /api/messages error:', err instanceof Error ? err.message : String(err));
-          sendUIJson(res, 500, { error: 'Failed to fetch messages.' });
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/messages', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ try {
+ const urlObj = new URL(req.url, 'http://localhost');
+ let contactId = urlObj.searchParams.get('contactId') || '';
+ let conversationId = urlObj.searchParams.get('conversationId') || '';
+ if (contactId && !conversationId) {
+ const contacts = await getContacts();
+ const contact = contacts.find((c: any) => c.Contact_ID === contactId);
+ conversationId = contact?.Channel_Contact_ID || '';
+ }
+ if (!conversationId) {
+ sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
+ return true;
+ }
+ const messages = await db.getMessagesByConversation(conversationId);
+ await db.markConversationRead(conversationId);
+ sendUIJson(res, 200, { conversationId, contactId, messages });
+ } catch (err) {
+ api.logger.error('[ui] /api/messages error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 500, { error: 'Failed to fetch messages.' });
+ }
+ return true;
+ }});
 
-    // ── GET /api/customer?contactId=...  (or ?conversationId=... as a fallback) ─
-    api.registerHttpRoute({
-      path: '/api/customer',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const urlObj = new URL(req.url, 'http://localhost');
-          let contactId = urlObj.searchParams.get('contactId') || '';
-          const conversationId = urlObj.searchParams.get('conversationId') || '';
-          const contacts = await getContacts();
-          let contact = contactId ? contacts.find((c: any) => c.Contact_ID === contactId) : null;
-          if (!contact && conversationId) {
-            contact = contacts.find((c: any) => c.Channel_Contact_ID === conversationId);
-            contactId = contact?.Contact_ID || '';
-          }
-          if (!contact) {
-            sendUIJson(res, 200, { contactId, customer: null });
-            return true;
-          }
-          // getJobs() loads the whole 2_Jobs sheet before filtering client-side —
-          // fine at this CRM's job volume, but a known scaling limit if that
-          // sheet grows large; revisit with a Sheets-side filter/query if so.
-          const jobs = (await getJobs()).filter((j: any) => j.Contact_ID === contactId);
-          jobs.sort((a: any, b: any) => (b.Job_Date || '').localeCompare(a.Job_Date || ''));
-          const lastJob = jobs[0] || null;
-          sendUIJson(res, 200, {
-            contactId,
-            customer: {
-              name: contact.Full_Name || '',
-              status: contact.Contact_Status || '',
-              jobs: {
-                lastJobDate: lastJob?.Job_Date || null,
-                lastJobService: lastJob?.Service_Type || null,
-                lastJobUnits: lastJob?.Units_Serviced || lastJob?.Units_In_Home || null,
-                totalJobs: jobs.length,
-              },
-              household: {
-                elderly: contact.Elderly_In_Home === 'TRUE',
-                children: contact.Children_In_Home === 'TRUE',
-                pets: contact.Pets_In_Home === 'TRUE',
-                googleReview: contact.Google_Review_Given === 'TRUE',
-              },
-              property: {
-                address: contact.Address || '',
-                postalCode: contact.Postal_Code || '',
-                assignedTeam: contact.Assigned_Team || '',
-              },
-            },
-          });
-        } catch (err) {
-          api.logger.error('[ui] /api/customer error:', err instanceof Error ? err.message : String(err));
-          sendUIJson(res, 500, { error: 'Failed to fetch customer.' });
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/customer', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ try {
+ const urlObj = new URL(req.url, 'http://localhost');
+ let contactId = urlObj.searchParams.get('contactId') || '';
+ const conversationId = urlObj.searchParams.get('conversationId') || '';
+ const contacts = await getContacts();
+ let contact = contactId ? contacts.find((c: any) => c.Contact_ID === contactId) : null;
+ if (!contact && conversationId) {
+ contact = contacts.find((c: any) => c.Channel_Contact_ID === conversationId);
+ contactId = contact?.Contact_ID || '';
+ }
+ if (!contact) {
+ sendUIJson(res, 200, { contactId, customer: null });
+ return true;
+ }
+ // getJobs() loads the whole 2_Jobs sheet before filtering client-side —
+ // fine at this CRM's job volume, but a known scaling limit if that
+ // sheet grows large; revisit with a Sheets-side filter/query if so.
+ const jobs = (await getJobs()).filter((j: any) => j.Contact_ID === contactId);
+ jobs.sort((a: any, b: any) => (b.Job_Date || '').localeCompare(a.Job_Date || ''));
+ const lastJob = jobs[0] || null;
+ sendUIJson(res, 200, {
+ contactId,
+ customer: {
+ name: contact.Full_Name || '',
+ status: contact.Contact_Status || '',
+ jobs: {
+ lastJobDate: lastJob?.Job_Date || null,
+ lastJobService: lastJob?.Service_Type || null,
+ lastJobUnits: lastJob?.Units_Serviced || lastJob?.Units_In_Home || null,
+ totalJobs: jobs.length,
+ },
+ household: {
+ elderly: contact.Elderly_In_Home === 'TRUE',
+ children: contact.Children_In_Home === 'TRUE',
+ pets: contact.Pets_In_Home === 'TRUE',
+ googleReview: contact.Google_Review_Given === 'TRUE',
+ },
+ property: {
+ address: contact.Address || '',
+ postalCode: contact.Postal_Code || '',
+ assignedTeam: contact.Assigned_Team || '',
+ },
+ },
+ });
+ } catch (err) {
+ api.logger.error('[ui] /api/customer error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 500, { error: 'Failed to fetch customer.' });
+ }
+ return true;
+ }});
 
-    // ── GET /api/queue — stub, real data in Phase 7 ────────────────────────────
-    api.registerHttpRoute({
-      path: '/api/queue',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        sendUIJson(res, 200, { ok: true, queue: [] });
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/queue', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ sendUIJson(res, 200, { ok: true, queue: [] });
+ return true;
+ }});
 
-    // ── GET /api/calendar?date=YYYY-MM-DD ───────────────────────────────────────
-    // listEvents() reads one calendar at a time (defaults to the single hardcoded
-    // CALENDAR_ID) — each active team has its own Calendar_ID (scheduler.js
-    // getTeamCalendars), so this fetches every active team's calendar for the
-    // requested day and merges them, rather than only ever showing one team.
-    api.registerHttpRoute({
-      path: '/api/calendar',
-      auth: 'plugin',
-      match: 'exact',
-      handler: async (req: any, res: any) => {
-        if (!requireUIAuth(req, res)) return true;
-        try {
-          const urlObj = new URL(req.url, 'http://localhost');
-          const date = urlObj.searchParams.get('date') || '';
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            sendUIJson(res, 400, { error: 'date must be YYYY-MM-DD' });
-            return true;
-          }
-          const timeMin = new Date(`${date}T00:00:00+08:00`);
-          const timeMax = new Date(`${date}T23:59:59+08:00`);
-
-          const { getTeamCalendars } = await import('../../../crm/scheduler.js');
-          const { listEvents, parseDescription, extractFromTitle } = await import('../../../crm/calendar.js');
-          const contacts = await getContacts();
-          const teams = await getTeamCalendars();
-
-          const events: any[] = [];
-          for (const team of teams) {
-            let teamEvents: any[] = [];
-            try {
-              teamEvents = await listEvents(timeMin, timeMax, {}, team.Calendar_ID);
-            } catch (err) {
-              api.logger.error(`[ui] /api/calendar: listEvents failed for team ${team.Team_ID}:`, err instanceof Error ? err.message : String(err));
-              continue;
-            }
-            for (const ev of teamEvents) {
-              const meta = parseDescription(ev.description);
-              const titleParts = extractFromTitle(ev.summary);
-              const contactId = meta.contact_id || titleParts.contactId || null;
-              const contact = contactId ? contacts.find((c: any) => c.Contact_ID === contactId) : null;
-              events.push({
-                eventId: ev.id,
-                start: ev.start?.dateTime || ev.start?.date || null,
-                end: ev.end?.dateTime || ev.end?.date || null,
-                status: ev.status || null,
-                team: team.Team_Name,
-                teamId: team.Team_ID,
-                contactId,
-                customerName: contact?.Full_Name || null,
-                serviceType: meta.service || null,
-                units: meta.units || null,
-                jobId: meta.job_id || titleParts.jobId || null,
-              });
-            }
-          }
-          events.sort((a, b) => String(a.start).localeCompare(String(b.start)));
-          sendUIJson(res, 200, { date, events });
-        } catch (err) {
-          api.logger.error('[ui] /api/calendar error:', err instanceof Error ? err.message : String(err));
-          sendUIJson(res, 500, { error: 'Failed to fetch calendar.' });
-        }
-        return true;
-      },
-    });
+ api.registerHttpRoute({ path: '/api/calendar', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ const urlObj = new URL(req.url, 'http://localhost');
+ const dateParam = urlObj.searchParams.get('date');
+ const dayStart = new Date((dateParam || '') + 'T00:00:00+08:00');
+  const dayEnd = new Date((dateParam || '') + 'T23:59:59+08:00');
+ try {
+   const allEvents = [];
+   const allContacts = await getContacts();
+   const teams = await getTeamCalendars();
+   for (const team of teams) {
+     let events = [];
+     try {
+       events = await listEvents(dayStart, dayEnd, {}, team.Calendar_ID);
+     } catch (err) {
+       api.logger.error(`[ui] /api/calendar: listEvents failed for team ${team.Team_ID}:`, err instanceof Error ? err.message : String(err));
+       continue;
+     }
+     for (const ev of events) {
+       const tit = ev.summary || '';
+       const parts = tit.split('—');
+       const jobId = parts.length > 1 ? parts[1].trim().match(/JOB-[^\s]+/)?.[0] : '';
+       const custRef = parts.length > 1 ? parts[0].trim() : tit;
+        const contactIdMatch = custRef.match(/KA-\d+/);
+        const contactId = contactIdMatch ? contactIdMatch[0] : null;
+       const status = ev.status === 'confirmed' ? 'confirmed' : ev.status === 'cancelled' ? 'cancelled' : 'pending';
+       const contact = contactId ? (allContacts || []).find((c) => c.Contact_ID === contactId) : null;
+       allEvents.push({
+         id: ev.id,
+         title: tit,
+         jobId,
+         contactId,
+         customerRef: contact ? contact.Full_Name : custRef,
+         customerName: contact ? contact.Full_Name : null,
+         start: ev.start?.dateTime || ev.start?.date,
+         end: ev.end?.dateTime || ev.end?.date,
+         status,
+         description: ev.description || '',
+         calendarId: team.Calendar_ID,
+         team: team.Team_Name,
+       });
+     }
+   }
+   sendUIJson(res, 200, { ok: true, date: dateParam || '', events: allEvents });
+ } catch (err) {
+   api.logger.error('[ui] /api/calendar error:', err instanceof Error ? err.message : String(err));
+   sendUIJson(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err), events: [] });
+ }
+ return true;
+ }});
 
     // ── POST /api/send — Path A: plain-text compose, sends immediately ─────────
     // Same conversationId-first / contactId-fallback resolution as /api/messages.

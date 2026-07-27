@@ -59,20 +59,18 @@ import {
  pendingApprovals,
  BLOCK_SIZE_MINS,
 } from './bot.js';
+import { broadcastToUI } from './broadcast.js';
+import * as db from './db.js';
 
 import { sendWhatsApp } from './whatsapp.js';
-import * as db from './db.js';
-import { broadcastToUI } from './broadcast.js';
 
-// ─── Local helpers ────────────────────────────────────────────────────────────
+
+// ── Phase 2 helpers ───────────────────────────────────────────────────────────
 
 function customerChannelFor(contact) {
  return (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
 }
 
-// Wraps a notifyFn (or the default operator Telegram send) so every operator
-// notification also reaches the browser UI (broadcastToUI) and gets logged to
-// SQLite as a bot-resp row, without repeating that logic at every call site.
 function makeNotify(notifyFn, contact, inboxId) {
  const send = notifyFn ?? ((text) => sendTelegram(OPERATOR_TELEGRAM_ID, text));
  return async (text) => {
@@ -90,6 +88,8 @@ function makeNotify(notifyFn, contact, inboxId) {
  }
  };
 }
+
+// ─── Local helpers ────────────────────────────────────────────────────────────
 
 export function normalizeInboxId(raw) {
  if (!raw) return null;

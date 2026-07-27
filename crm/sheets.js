@@ -221,11 +221,20 @@ async function appendRow(sheetName, values) {
    valueRenderOption: 'UNFORMATTED_VALUE',
   });
   const colAValues = res.data.values || [];
-  const firstEmptyRow = dataStartRow + colAValues.length;
+  // Find first truly empty row in column A
+  let emptyIdx = colAValues.length;
+  for (let i = 0; i < colAValues.length; i++) {
+   const val = colAValues[i]?.[0];
+   if (val === undefined || val === null || val === '') {
+    emptyIdx = i;
+    break;
+   }
+  }
+  const firstEmptyRow = dataStartRow + emptyIdx;
   return sheets.spreadsheets.values.update({
    spreadsheetId: SPREADSHEET_ID,
    range: `${sheetName}!A${firstEmptyRow}`,
-   valueInputOption: 'USER_ENTERED',
+   valueInputOption: 'RAW',
    requestBody: { values: [values] },
   });
  });
@@ -239,7 +248,7 @@ async function updateRow(sheetName, sheetRowNum, colValues) {
  }));
  await queueWrite(() => sheets.spreadsheets.values.batchUpdate({
  spreadsheetId: SPREADSHEET_ID,
- requestBody: { valueInputOption: 'USER_ENTERED', data: requests },
+ requestBody: { valueInputOption: 'RAW', data: requests },
  }));
 }
 
@@ -365,6 +374,10 @@ export async function updateJob(jobId, fields) {
  await updateRow(SHEETS.JOBS, sheetRow, colValues);
 }
 
+export async function getMessageLog() {
+ return readSheet(SHEETS.MESSAGE_LOG);
+}
+
 export async function getTemplates() {
  const TTL_MS = 15 * 60 * 1000; // 15 minutes — templates change very rarely
  if (_templateCache && Date.now() - _templateCacheAt < TTL_MS) return _templateCache;
@@ -389,11 +402,21 @@ export function fillTemplate(text, vars = {}) {
   return result;
 }
 
+async function getNextLogId() {
+ const logs = await getMessageLog();
+ const max = logs
+ .map(l => parseInt((l.Log_ID || '').replace(/^LOG-/i, ''), 10))
+ .filter(n => !isNaN(n))
+ .reduce((a, b) => Math.max(a, b), 0);
+ return `LOG-${String(max + 1).padStart(4, '0')}`;
+}
+
 export async function logMessage(data) {
  const now = getSGTDateTime();
  const headers = await getSheetHeaders(SHEETS.MESSAGE_LOG);
+ const logId = await getNextLogId();
  const rowData = {
- Log_ID: '',
+ Log_ID: logId,
  Contact_ID: data.Contact_ID || '',
  Customer_Name: data.Customer_Name || '',
  Template_ID: data.Template_ID || '',
@@ -959,4 +982,3 @@ export async function updateSubmissionStatus(subId, status) {
     requestBody: { values: [[status]] },
   });
 }
-

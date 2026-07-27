@@ -125,7 +125,7 @@ export function isProbablePhotoYesReply(text) {
 
 // ─── handleSendPhotosCommand ──────────────────────────────────────────────────
 
-export async function handleSendPhotosCommand(inboxId) {
+export async function handleSendPhotosCommand(inboxId, force = false) {
   const normalized = normalizeInboxId(inboxId);
   if (!normalized) {
     return { success: false, message: '⚠️ Invalid inbox ID. Usage: /sendphotos INBOX-001' };
@@ -151,7 +151,7 @@ export async function handleSendPhotosCommand(inboxId) {
     };
   }
 
-  if (job.Photos_Sent === 'TRUE') {
+  if (job.Photos_Sent === 'TRUE' && !force) {
     await sendTelegram(
       OPERATOR_TELEGRAM_ID,
       `ℹ️ Photos already sent for ${job.Job_ID}. Send again?
@@ -186,6 +186,16 @@ export async function handleInboundMessage(msg) {
 
  console.log(`[crm] Inbound from ${contactId}: ${text}`);
 
+ // Log to SQLite for web interface
+ await db.insert({
+ conversation_id: String(contactId),
+ channel: channel.toLowerCase(),
+ direction: 'inbound',
+ message_type: 'direct',
+ text,
+ sender: String(contactId),
+ }).catch(e => console.error('[crm] db log failed:', e.message));
+
  let contact = await findContactByChannelId(contactId);
  if (!contact) {
  const displayName = senderName || (channel === 'WhatsApp' ? `WA-${contactId}` : `TG-${contactId}`);
@@ -205,15 +215,6 @@ export async function handleInboundMessage(msg) {
  Sent_By: contact.Full_Name || contactId,
  Status: 'Received',
  });
-
- await db.insert({
- conversation_id: String(contactId),
- channel: channel.toLowerCase(),
- direction: 'inbound',
- message_type: 'direct',
- text,
- sender: String(contactId),
- }).catch(e => console.error('[crm] db log failed:', e.message));
 
 
   // ── Check if this is a YES reply to POST-D0-UTIL photo bundle offer ───────
@@ -917,6 +918,16 @@ export async function handleOperatorApproval(operatorMsg, { notifyFn } = {}) {
  } else {
  await sendTelegram(targetContactId, replyText);
  }
+ } else {
+ // Test customer — log to SQLite even though we don't actually send
+ await db.insert({
+ conversation_id: String(targetContactId),
+ channel: customerChannel.toLowerCase(),
+ direction: 'outbound',
+ message_type: 'bot-resp',
+ text: replyText,
+ sender: 'operator',
+ }).catch(e => console.error('[crm] db log failed:', e.message));
  }
 
  await logMessage({
