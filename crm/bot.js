@@ -226,6 +226,7 @@ export {
  handleInfoCommand,
  handleOperatorApproval,
  handleQueueApproval,
+ handleQueueDiscard,
  isQueueApprovalText,
 } from './crm.js';
 

@@ -740,6 +740,14 @@ export async function removeFromQueue(queueId) {
   }));
 }
 
+export async function updateQueueDraftText(queueId, newText) {
+  const found = await findQueueById(queueId);
+  if (!found) throw new Error(`Queue entry not found: ${queueId}`);
+  const headers = await getSheetHeaders(SHEETS.QUEUE);
+  const colValues = [{ col: colLetterFromHeader(headers, 'Draft_Text'), value: newText }];
+  await updateRow(SHEETS.QUEUE, found.rowNum, colValues);
+}
+
 async function nextJobId() {
  const jobs = await getJobs();
  const today = getSGTDate().replace(/-/g, '');

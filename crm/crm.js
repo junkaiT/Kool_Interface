@@ -961,25 +961,38 @@ export function isQueueApprovalText(text) {
 }
 
 // ─── handleQueueApproval ──────────────────────────────────────────────────────
+// Accepts either a 3-digit seq (Telegram's typed "Q-NNN" form) or a full
+// Queue_ID (the browser queue panel, which always has the full id on hand) --
+// exact match is tried first so a full id can never accidentally collide with
+// the suffix-match meant for the short typed form.
 
 export async function handleQueueApproval(seqNum, notifyFn) {
  const queue = await getQueue();
- const entry = queue.find(q => (q.Queue_ID || '').endsWith('-' + seqNum));
+ const entry = queue.find(q => q.Queue_ID === seqNum) || queue.find(q => (q.Queue_ID || '').endsWith('-' + seqNum));
 
  if (!entry) {
- await notifyFn(`⚠️ No queued draft found for Q-${seqNum}.`);
- return;
+ const msg = `⚠️ No queued draft found for Q-${seqNum}.`;
+ await notifyFn(msg);
+ return { success: false, message: msg };
  }
+
+ // Contact_ID on a queue row is the internal KA-XXXX id, not a channel id --
+ // sendWhatsApp/sendTelegram expect a real phone/Telegram id and do no
+ // resolution of their own, so without this the send silently goes nowhere.
+ const contacts = await getContacts();
+ const contact = contacts.find(c => c.Contact_ID === entry.Contact_ID);
+ const channelId = contact?.Channel_Contact_ID || entry.Contact_ID;
 
  try {
  if ((entry.Channel || '').toLowerCase() === 'whatsapp') {
- await sendWhatsApp(entry.Contact_ID, entry.Draft_Text);
+ await sendWhatsApp(channelId, entry.Draft_Text);
  } else {
- await sendTelegram(entry.Contact_ID, entry.Draft_Text);
+ await sendTelegram(channelId, entry.Draft_Text);
  }
  } catch (err) {
- await notifyFn(`❌ Failed to send Q-${seqNum} to ${entry.Contact_ID} via ${entry.Channel}: ${err.message}`);
- return;
+ const msg = `❌ Failed to send ${entry.Queue_ID} to ${entry.Contact_ID} via ${entry.Channel}: ${err.message}`;
+ await notifyFn(msg);
+ return { success: false, message: msg };
  }
 
  await logMessage({
@@ -994,5 +1007,28 @@ export async function handleQueueApproval(seqNum, notifyFn) {
  const found = await findQueueById(entry.Queue_ID);
  if (found) await removeFromQueue(found.id);
 
- await notifyFn(`✅ Sent Q-${seqNum} to ${entry.Contact_ID} via ${entry.Channel || 'Telegram'}.`);
+ const successMsg = `✅ Sent ${entry.Queue_ID} to ${entry.Contact_ID} via ${entry.Channel || 'Telegram'}.`;
+ await notifyFn(successMsg);
+ return { success: true, message: successMsg };
+}
+
+// ─── handleQueueDiscard ────────────────────────────────────────────────────
+// Removes a queued draft without sending it. Same exact-match-then-suffix
+// lookup as handleQueueApproval so it accepts a full Queue_ID or a 3-digit seq.
+
+export async function handleQueueDiscard(seqNum, notifyFn) {
+ const queue = await getQueue();
+ const entry = queue.find(q => q.Queue_ID === seqNum) || queue.find(q => (q.Queue_ID || '').endsWith('-' + seqNum));
+
+ if (!entry) {
+ const msg = `⚠️ No queued draft found for Q-${seqNum}.`;
+ await notifyFn(msg);
+ return { success: false, message: msg };
+ }
+
+ await removeFromQueue(entry.Queue_ID);
+
+ const msg = `🗑️ Discarded ${entry.Queue_ID} (${entry.Contact_ID}) — not sent.`;
+ await notifyFn(msg);
+ return { success: true, message: msg };
 }

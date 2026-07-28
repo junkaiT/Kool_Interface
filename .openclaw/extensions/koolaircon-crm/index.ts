@@ -24,7 +24,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact, updateContact } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact, updateContact, getQueue, updateQueueDraftText } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
 import { listEvents, parseDescription } from "../../../crm/calendar.js";
 import { getTeamCalendars } from "../../../crm/scheduler.js";
@@ -47,6 +47,7 @@ import {
   handleCalInfo,
   isQueueApprovalText,
   handleQueueApproval,
+  handleQueueDiscard,
   OPERATOR_TELEGRAM_ID,
   sendTelegram,
 } from "../../../crm/bot.js";
@@ -1243,7 +1244,157 @@ export default definePluginEntry({
 
  api.registerHttpRoute({ path: '/api/queue', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
  if (!requireUIAuth(req, res)) return true;
- sendUIJson(res, 200, { ok: true, queue: [] });
+ try {
+ const [queueRows, contacts] = await Promise.all([getQueue(), getContacts()]);
+ const items = queueRows.map((q: any) => {
+ // Contact_ID on a queue row is the internal KA-XXXX id -- match against
+ // Contact_ID here, not Channel_Contact_ID (that field resolution is a
+ // separate concern only needed at send time, see /api/queue/approve).
+ const contact = contacts.find((c: any) => c.Contact_ID === q.Contact_ID);
+ return {
+ queueId: q.Queue_ID || '',
+ contactId: q.Contact_ID || '',
+ customerName: contact ? contact.Full_Name : (q.Contact_ID || 'Unknown'),
+ templateId: q.Template_ID || '',
+ channel: q.Channel || 'Telegram',
+ generatedDate: q.Generated_Date || '',
+ draftText: q.Draft_Text || '',
+ };
+ }).sort((a: any, b: any) => (a.generatedDate < b.generatedDate ? 1 : a.generatedDate > b.generatedDate ? -1 : 0));
+ sendUIJson(res, 200, { ok: true, queue: items });
+ } catch (err) {
+ api.logger.error('[ui] /api/queue error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 500, { ok: false, error: 'Failed to fetch queue.', queue: [] });
+ }
+ return true;
+ }});
+
+ // ── POST /api/queue/edit — save an edited draft, no send ────────────────────
+ // Structured values already in hand (a form, not typed text), so this calls
+ // updateQueueDraftText() directly rather than routing through any command
+ // parsing -- matches how /api/customer calls updateContact() directly.
+ api.registerHttpRoute({ path: '/api/queue/edit', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ if (req.method !== 'POST') { sendUIJson(res, 405, { error: 'Method not allowed' }); return true; }
+ let rawBody = '';
+ await new Promise<void>((resolve, reject) => {
+ req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+ req.on('end', () => resolve());
+ req.on('error', reject);
+ });
+ let parsed: any;
+ try {
+ parsed = JSON.parse(rawBody);
+ } catch {
+ sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+ return true;
+ }
+ const queueId = String(parsed?.queueId || '');
+ const draftText = String(parsed?.draftText ?? '');
+ if (!queueId || !draftText.trim()) {
+ sendUIJson(res, 400, { error: 'queueId and non-empty draftText are required' });
+ return true;
+ }
+ try {
+ await updateQueueDraftText(queueId, draftText);
+ sendUIJson(res, 200, { ok: true, queueId, draftText });
+ } catch (err) {
+ api.logger.error('[ui] /api/queue/edit error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 502, { ok: false, error: 'Failed to save draft.' });
+ }
+ return true;
+ }});
+
+ // ── POST /api/queue/discard — remove a queued draft without sending it ──────
+ api.registerHttpRoute({ path: '/api/queue/discard', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ if (req.method !== 'POST') { sendUIJson(res, 405, { error: 'Method not allowed' }); return true; }
+ let rawBody = '';
+ await new Promise<void>((resolve, reject) => {
+ req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+ req.on('end', () => resolve());
+ req.on('error', reject);
+ });
+ let parsed: any;
+ try {
+ parsed = JSON.parse(rawBody);
+ } catch {
+ sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+ return true;
+ }
+ const queueId = String(parsed?.queueId || '');
+ if (!queueId) { sendUIJson(res, 400, { error: 'queueId is required' }); return true; }
+ try {
+ const result = await handleQueueDiscard(queueId, () => {});
+ sendUIJson(res, 200, { ok: result.success, message: result.message });
+ } catch (err) {
+ api.logger.error('[ui] /api/queue/discard error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 502, { ok: false, error: 'Failed to discard draft.' });
+ }
+ return true;
+ }});
+
+ // ── POST /api/queue/approve — save current text, then send + remove ─────────
+ // draftText is always whatever's currently in the operator's textarea at
+ // click time -- saved first (even if "Save edit" was never clicked) so
+ // handleQueueApproval's own fresh getQueue() read picks up exactly what's on
+ // screen, not stale sheet text from before an unsaved edit.
+ api.registerHttpRoute({ path: '/api/queue/approve', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
+ if (!requireUIAuth(req, res)) return true;
+ if (req.method !== 'POST') { sendUIJson(res, 405, { error: 'Method not allowed' }); return true; }
+ let rawBody = '';
+ await new Promise<void>((resolve, reject) => {
+ req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+ req.on('end', () => resolve());
+ req.on('error', reject);
+ });
+ let parsed: any;
+ try {
+ parsed = JSON.parse(rawBody);
+ } catch {
+ sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+ return true;
+ }
+ const queueId = String(parsed?.queueId || '');
+ const contactId = String(parsed?.contactId || '');
+ const draftText = String(parsed?.draftText ?? '');
+ if (!queueId || !draftText.trim()) {
+ sendUIJson(res, 400, { error: 'queueId and non-empty draftText are required' });
+ return true;
+ }
+ try {
+ await updateQueueDraftText(queueId, draftText);
+ const result = await handleQueueApproval(queueId, () => {});
+
+ let respMessage: any = null;
+ if (result.success && contactId) {
+ const contacts = await getContacts();
+ const contact = contacts.find((c: any) => c.Contact_ID === contactId);
+ if (contact?.Channel_Contact_ID) {
+ const channel = (contact.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+ respMessage = {
+ conversation_id: contact.Channel_Contact_ID,
+ channel,
+ direction: 'outbound',
+ message_type: 'bot-resp',
+ text: `✅ Reminder draft sent (${queueId}).`,
+ timestamp: Date.now(),
+ sender: 'operator',
+ };
+ try {
+ await db.insert(respMessage);
+ } catch (e) {
+ api.logger.error('[ui] /api/queue/approve db log failed:', e instanceof Error ? e.message : String(e));
+ }
+ broadcastToUI({ type: 'message', message: respMessage });
+ }
+ }
+
+ sendUIJson(res, 200, { ok: result.success, message: result.message, respMessage });
+ } catch (err) {
+ api.logger.error('[ui] /api/queue/approve error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 502, { ok: false, error: 'Failed to send draft.' });
+ }
  return true;
  }});
 
