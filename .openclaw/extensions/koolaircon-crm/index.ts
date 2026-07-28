@@ -242,6 +242,7 @@ async function runConfirmCommand(argsString: string | undefined) {
         text:
           `✅ ${result.inboxId} — slot ${result.option} selected${changeNote}.\n` +
           `Draft confirmation ready. Reply \`${result.inboxId}\` (or \`/in ${result.inboxId}\`) to send + create job.`,
+        inboxId: result.inboxId,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -273,6 +274,7 @@ async function runConfirmBCommand(argsString: string | undefined) {
         text:
           `✅ ${result.inboxId} — calendar event matched (${result.start} ${result.time}).\n` +
           `Draft confirmation ready. Reply \`${result.inboxId}\` to send + create job.`,
+        inboxId: result.inboxId,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -321,6 +323,7 @@ async function runBCommand(argsString: string | undefined) {
           `✅ ${result.inboxId} — ${result.slots.length} slot(s) drafted.\n\n` +
           `${result.draft}\n\n` +
           `Reply \`${result.inboxId}\` to send to customer.`,
+        inboxId: result.inboxId,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -382,6 +385,7 @@ async function runCalinfoCommand(argsString: string | undefined) {
             ? `Draft confirmation ready. Reply \`${result.inboxId}\` to send to customer.`
             : `Still missing: ${result.stillMissing.join(', ')}.\n` +
               `Run /info ${result.inboxId} [address] | [postal] | [phone] to complete.`),
+        inboxId: result.readyToConfirm ? result.inboxId : undefined,
       };
     }
     return { text: `⚠️ ${result.message}` };
@@ -408,12 +412,45 @@ async function runMixyesCommand(argsString: string | undefined) {
           `✅ ${result.inboxId} — ${result.slots.length} slot(s) found across all teams.\n\n` +
           `${result.draft}\n\n` +
           `Reply \`${result.inboxId}\` to send to customer.`,
+        inboxId: result.inboxId,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { text: `❌ /mixyes error: ${msg}`, isError: true };
+  }
+}
+
+// checkCal takes no args and isn't tied to any one contact/thread (it's a
+// global calendar scan) -- extracted the same way as the other commands so
+// the "Manual Calendar Addition" browser button can call it via
+// /api/command, alongside the existing Telegram /checkCal registration.
+async function runCheckCalCommand() {
+  try {
+    const result = await handleCheckCal();
+    if (result.found === 0) {
+      return {
+        text:
+          "✅ Calendar checked — no new manual events found.\n\n" +
+          "To add a manual booking: create an event in \"Kool Aircon Bookings\" " +
+          "with the Contact_ID (e.g. KA-0001) in the title, then run /checkCal again.",
+      };
+    }
+    const lines = result.processed.map(
+      (p: any) =>
+        `• ${p.inboxId} — ${p.contactName} on ${p.date} ${p.time}\n` +
+        "  Reply `" + p.inboxId + "` to send confirmation and create job."
+    );
+    return {
+      text:
+        `✅ Found ${result.found} new manual event(s):\n\n` +
+        lines.join('\n\n') +
+        `\n\nCheck Telegram for the drafted confirmation messages.`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ /checkCal error: ${msg}`, isError: true };
   }
 }
 
@@ -434,6 +471,7 @@ async function runMixnoCommand(argsString: string | undefined) {
           `✅ ${result.inboxId} — ${result.slots.length} slot(s) found (home team).\n\n` +
           `${result.draft}\n\n` +
           `Reply \`${result.inboxId}\` to send to customer.`,
+        inboxId: result.inboxId,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -528,38 +566,14 @@ export default definePluginEntry({
       },
     });
 
-    // ── /asCustomer <message> ─────────────────────────────────────────────────
+    // ── /checkCal ──────────────────────────────────────────────────────────────
     registerUICommand(api, {
       name: "checkCal",
       description: "Scan Google Calendar for manually-created events with a Contact_ID but no job yet.",
       acceptsArgs: false,
       requireAuth: true,
       async handler(ctx) {
-        try {
-          const result = await handleCheckCal();
-          if (result.found === 0) {
-            return {
-              text:
-                "✅ Calendar checked — no new manual events found.\n\n" +
-                "To add a manual booking: create an event in \"Kool Aircon Bookings\" " +
-                "with the Contact_ID (e.g. KA-0001) in the title, then run /checkCal again.",
-            };
-          }
-          const lines = result.processed.map(
-            (p: any) =>
-              `• ${p.inboxId} — ${p.contactName} on ${p.date} ${p.time}\n` +
-              "  Reply `" + p.inboxId + "` to send confirmation and create job."
-          );
-          return {
-            text:
-              `✅ Found ${result.found} new manual event(s):\n\n` +
-              lines.join('\n\n') +
-              `\n\nCheck Telegram for the drafted confirmation messages.`,
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ /checkCal error: ${msg}`, isError: true };
-        }
+        return runCheckCalCommand();
       },
     });
 
@@ -1451,7 +1465,7 @@ export default definePluginEntry({
           }
           broadcastToUI({ type: 'message', message: respMessage });
 
-          sendUIJson(res, 200, { ok: true, inboxId: result.inboxId, slots: result.slots, draft: result.draft, respMessage });
+          sendUIJson(res, 200, { ok: true, now: Date.now(), inboxId: result.inboxId, slots: result.slots, draft: result.draft, respMessage });
         } catch (err) {
           api.logger.error('[ui] /api/booking/slots error:', err instanceof Error ? err.message : String(err));
           sendUIJson(res, 502, { error: 'Failed to find slots.' });
@@ -1502,9 +1516,10 @@ export default definePluginEntry({
           const inboxRow = await findInboxById(result.inboxId);
           const contacts = await getContacts();
           const contact = inboxRow ? contacts.find((c: any) => c.Contact_ID === inboxRow.row.Contact_ID) : null;
+          let respMessage: any = null;
           if (contact?.Channel_Contact_ID) {
             const channel = (contact.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
-            const respMessage = {
+            respMessage = {
               conversation_id: contact.Channel_Contact_ID,
               channel,
               direction: 'outbound',
@@ -1521,7 +1536,11 @@ export default definePluginEntry({
             broadcastToUI({ type: 'message', message: respMessage });
           }
 
-          sendUIJson(res, 200, { ok: true, inboxId: result.inboxId, price: result.price, timeChanged: result.timeChanged });
+          // Returning respMessage/now here (mirroring /api/booking/slots and
+          // /api/command's convention) lets the caller render it immediately
+          // and advance its poll bookmark, instead of waiting for the next
+          // long-poll tick to pick it up.
+          sendUIJson(res, 200, { ok: true, now: Date.now(), inboxId: result.inboxId, price: result.price, timeChanged: result.timeChanged, respMessage });
         } catch (err) {
           api.logger.error('[ui] /api/booking/confirm error:', err instanceof Error ? err.message : String(err));
           sendUIJson(res, 502, { error: 'Failed to confirm slot.' });
@@ -1545,7 +1564,11 @@ export default definePluginEntry({
       mixyes: runMixyesCommand,
       mixno: runMixnoCommand,
       sendphotos: runSendphotosCommand,
+      checkcal: () => runCheckCalCommand(),
     };
+    // checkCal takes no args and isn't scoped to any one contact -- skip the
+    // inbox-id-prepend logic below for it entirely (see that block's comment).
+    const NO_ID_PREPEND_COMMANDS = new Set(['checkcal']);
 
     api.registerHttpRoute({
       path: '/api/command',
@@ -1631,7 +1654,7 @@ export default definePluginEntry({
           // top of that produces a malformed double-id string.
           const restArgsHasOwnId = /^(?:IN(?:BOX)?-\d+|KA-\d{3,4})\b/i.test(restArgs);
           let argsString = restArgs;
-          if (!isBareApproval && !restArgsHasOwnId && contact?.Contact_ID) {
+          if (!isBareApproval && !restArgsHasOwnId && contact?.Contact_ID && !NO_ID_PREPEND_COMMANDS.has(commandName)) {
             const openInbox = await findOpenInboxForContact(contact.Contact_ID);
             const resolvedId = openInbox?.inboxId || contact.Contact_ID;
             argsString = restArgs ? `${resolvedId} ${restArgs}` : resolvedId;
@@ -1670,11 +1693,9 @@ export default definePluginEntry({
           }
 
           // registerUICommand's persistCommandResult only fires when a result
-          // carries contactId/inboxId — none of the extracted runXCommand
-          // functions return those, so it's a silent no-op for every command
-          // reachable from here (true on the Telegram path too, pre-existing
-          // behavior, not something this route can rely on). Log the result
-          // directly instead, using the contact already resolved above.
+          // carries contactId/inboxId, which the Telegram path never relies
+          // on for these commands either -- so log the result directly here,
+          // using the contact already resolved above.
           let respMessage: any = null;
           if (result && typeof result.text === 'string') {
             respMessage = {
@@ -1694,10 +1715,18 @@ export default definePluginEntry({
             broadcastToUI({ type: 'message', message: respMessage });
           }
 
+          // Several runXCommand functions (b, confirm, confirmb, calinfo,
+          // mixyes, mixno) now return inboxId on success -- surfacing it here
+          // lets the browser attach a "Send to customer" button directly to
+          // the draft bubble instead of the operator having to type the
+          // INBOX id themselves. Absent for commands with nothing to send
+          // (info, sendphotos) or that already sent it (in/bare approval).
+          const draftInboxId = result && !isBareApproval ? result.inboxId : undefined;
+
           // Mirror /api/send's "now" convention: the client advances its poll
           // bookmark to this value so /api/updates doesn't re-deliver the same
           // two messages a second time on its next tick.
-          sendUIJson(res, 200, { ok: true, now: Date.now(), cmdMessage, respMessage });
+          sendUIJson(res, 200, { ok: true, now: Date.now(), cmdMessage, respMessage, draftInboxId });
         } catch (err) {
           api.logger.error('[ui] /api/command error:', err instanceof Error ? err.message : String(err));
           sendUIJson(res, 502, { error: 'Failed to run command.' });

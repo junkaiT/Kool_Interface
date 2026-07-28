@@ -80,6 +80,13 @@
  .bubble.outbound-direct { background: var(--accent); color: #fff; border-radius: 12px 2px 12px 12px; }
  .bubble.bot-command { background: #1b1f23; color: #d4d7dc; font-family: monospace; font-size: 12.5px; border-radius: 12px 2px 12px 12px; }
  .bubble.bot-response { background: #e9edf3; border-radius: 12px 2px 12px 12px; }
+ .bubble-row.system { justify-content: center; }
+ .bubble.system-message { max-width: 80%; background: #fff3cd; color: #7a5b00; border: 1px solid #ffe69c; border-radius: 10px; text-align: center; font-size: 12.5px; }
+ .draft-prompt { display: flex; align-items: center; gap: 8px; max-width: 80%; padding: 6px 12px; background: var(--bg-hover); border: 1px solid var(--border); border-radius: 10px; font-size: 11.5px; color: var(--text-dim); }
+ .draft-prompt .label { font-weight: 600; }
+ .draft-prompt button { flex: 0 0 auto; padding: 4px 10px; border: none; border-radius: 5px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; }
+ .draft-prompt button:disabled { opacity: .6; cursor: default; }
+ .draft-prompt.sent { color: var(--pill-customer); background: transparent; border-color: transparent; }
  .bubble-meta { font-size: 10.5px; margin-top: 3px; opacity: .6; }
  #compose-bar { background: var(--bg-panel); border-top: 1px solid var(--border); padding: 10px 16px; display: none; align-items: flex-end; gap: 10px; }
  #compose-input { flex: 1; resize: none; max-height: 120px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 13.5px; line-height: 1.4; }
@@ -138,6 +145,14 @@
  #booking-msg { font-size: 11px; margin-top: 6px; display: none; }
  #booking-msg.error { color: #c0392b; }
  #booking-msg.success { color: var(--pill-customer); }
+
+ #manual-cal-section { border-top: 1px solid var(--border); padding: 10px 12px; flex: 0 0 auto; }
+ #manual-cal-btn { background: #fff; color: var(--text-dim); border: 1px solid var(--border); width: 100%; padding: 6px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
+ #manual-cal-btn:hover { background: var(--bg-hover); }
+ #manual-cal-btn:disabled { opacity: .6; cursor: default; }
+ #manual-cal-msg { font-size: 11px; margin-top: 6px; display: none; }
+ #manual-cal-msg.error { color: #c0392b; }
+ #manual-cal-msg.success { color: var(--pill-customer); }
 
  #help-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; align-items: center; justify-content: center; }
  #help-modal.open { display: flex; }
@@ -199,6 +214,10 @@
  <div id="cal-jobs">
  <div id="cal-jobs-heading">Jobs</div>
  <div id="cal-jobs-list"><div id="cal-jobs-empty" style="color:var(--text-dim);font-size:12px">Select a date.</div></div>
+ </div>
+ <div id="manual-cal-section">
+ <button id="manual-cal-btn">Manual Calendar Addition</button>
+ <div id="manual-cal-msg"></div>
  </div>
  <div id="booking-panel">
  <h3>New booking</h3>
@@ -391,9 +410,15 @@
  if (!scroll) return;
  var dir = m.direction || "inbound";
  var mtype = m.message_type || "direct";
- var bubbleCls = dir === "inbound" ? "inbound" : (mtype === "bot-cmd" ? "bot-command" : mtype === "bot-resp" ? "bot-response" : "outbound-direct");
- var row = el("div", "bubble-row " + dir);
- var bubble = el("div", "bubble " + bubbleCls, m.text || "");
+ var text = m.text || "";
+ // Errors/warnings use the same ⚠️/❌ convention as every runXCommand's
+ // text across the codebase -- render those as a centered system notice
+ // instead of a normal grey bot-response bubble, so they're not mistaken
+ // for a customer-facing draft.
+ var isSystem = mtype === "bot-resp" && (text.indexOf("⚠️") === 0 || text.indexOf("❌") === 0);
+ var bubbleCls = isSystem ? "system-message" : (dir === "inbound" ? "inbound" : (mtype === "bot-cmd" ? "bot-command" : mtype === "bot-resp" ? "bot-response" : "outbound-direct"));
+ var row = el("div", "bubble-row " + (isSystem ? "system" : dir));
+ var bubble = el("div", "bubble " + bubbleCls, text);
  var meta = el("div", "bubble-meta", fmtTime(m.timestamp));
  bubble.appendChild(meta);
  row.appendChild(bubble);
@@ -526,6 +551,49 @@
  updateThreadPreview(m);
  }
 
+ // A draft (the 3-slot offer, a confirmation, etc.) isn't sent to the
+ // customer just by appearing here -- the operator still has to approve it
+ // via a bare INBOX-NNN reply. Attach a visible "Draft — not sent" prompt
+ // with a Send button right under it, wired to the exact same bare-approval
+ // mechanism (POST /api/command with the inbox id as text), so the operator
+ // doesn't have to remember to type it.
+ function renderDraftSendPrompt(conversationId, inboxId) {
+ if (!inboxId || conversationId !== state.activeConversationId) return;
+ var scroll = document.getElementById("message-scroll");
+ if (!scroll) return;
+ var row = el("div", "bubble-row system");
+ var wrap = el("div", "draft-prompt");
+ wrap.appendChild(el("span", "label", "📋 Draft — not sent to customer"));
+ var sendBtn = el("button", null, "Send to customer");
+ wrap.appendChild(sendBtn);
+ row.appendChild(wrap);
+ scroll.appendChild(row);
+ scroll.scrollTop = scroll.scrollHeight;
+ sendBtn.addEventListener("click", function () {
+ sendBtn.disabled = true;
+ fetch("/api/command", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({ conversationId: conversationId, text: inboxId }),
+ }).then(function (r) {
+ return r.json().then(function (d) { if (!r.ok || !d.ok) throw new Error(d.error || "send failed"); return d; });
+ }).then(function (data) {
+ renderIncomingMessage(data.cmdMessage);
+ renderIncomingMessage(data.respMessage);
+ state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+ renderThreadList();
+ state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+ wrap.className = "draft-prompt sent";
+ wrap.innerHTML = "";
+ wrap.appendChild(el("span", null, "✅ Sent to customer"));
+ }).catch(function (err) {
+ console.error("[ui] send draft failed:", err);
+ wrap.appendChild(el("span", null, "Failed — try again"));
+ sendBtn.disabled = false;
+ });
+ });
+ }
+
  function sendCompose() {
  var text = composeInput.value.trim();
  if (!text || !state.activeConversationId) return;
@@ -548,6 +616,7 @@
  if (isCommand) {
  renderIncomingMessage(data.cmdMessage);
  renderIncomingMessage(data.respMessage);
+ if (data.draftInboxId) renderDraftSendPrompt(state.activeConversationId, data.draftInboxId);
  } else {
  renderIncomingMessage(data.message);
  }
@@ -678,8 +747,16 @@
  state.booking.slots = data.slots || [];
  renderBookingSlots();
  if (data.respMessage) renderIncomingMessage(data.respMessage);
+ // The 3-slot offer just rendered isn't sent to the customer on its own --
+ // same bare-INBOX-NNN approval the compose box needs, surfaced as a button
+ // here so the operator doesn't have to switch to typing it.
+ renderDraftSendPrompt(state.activeConversationId, data.inboxId);
  state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
  renderThreadList();
+ // Without this, the next 3s poll re-fetches everything since the stale
+ // bookmark and re-renders the same message a second time (the message
+ // was already logged server-side via db.insert before this response).
+ if (data.now) state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
  }).catch(function (err) {
  console.error("[ui] find slots failed:", err);
  showBookingMsg("Failed to find slots — try again.", "error");
@@ -699,6 +776,8 @@
  }).then(function (r) { return r.json(); }).then(function (data) {
  if (!data.ok) { showBookingMsg(data.message || "Could not confirm slot.", "error"); return; }
  state.booking.chosenIndex = idx;
+ if (data.respMessage) renderIncomingMessage(data.respMessage);
+ if (data.now) state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
  bookingConfirmArea.innerHTML = "";
  bookingConfirmArea.appendChild(el("div", null, "Slot " + (idx + 1) + " confirmed" + (data.price ? " — $" + data.price + " SGD" : "") + "."));
  var sendBtn = el("button", null, "Send to customer");
@@ -734,6 +813,49 @@
  }
 
  bookingFindBtn.addEventListener("click", findSlots);
+
+ // ── Manual Calendar Addition: run /checkCal without leaving the browser ────
+ // Moved off Telegram-only per operator request -- reuses the existing
+ // /api/command bare-command path, same mechanism the compose box already
+ // uses for /b, /confirm, etc. checkCal itself is a global calendar scan
+ // (not scoped to the open thread), but a thread still needs to be open so
+ // the command result has somewhere to log/render.
+ var manualCalBtn = document.getElementById("manual-cal-btn");
+ var manualCalMsgEl = document.getElementById("manual-cal-msg");
+
+ function showManualCalMsg(text, cls) {
+ manualCalMsgEl.textContent = text;
+ manualCalMsgEl.className = cls || "";
+ manualCalMsgEl.style.display = "block";
+ }
+
+ manualCalBtn.addEventListener("click", function () {
+ if (!state.activeConversationId) {
+ showManualCalMsg("Open a conversation first.", "error");
+ return;
+ }
+ manualCalBtn.disabled = true;
+ manualCalMsgEl.style.display = "none";
+ fetch("/api/command", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({ conversationId: state.activeConversationId, text: "/checkCal" }),
+ }).then(function (r) {
+ return r.json().then(function (d) { if (!r.ok || !d.ok) throw new Error(d.error || "command failed"); return d; });
+ }).then(function (data) {
+ renderIncomingMessage(data.cmdMessage);
+ renderIncomingMessage(data.respMessage);
+ state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+ renderThreadList();
+ state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+ showManualCalMsg("Calendar checked.", "success");
+ }).catch(function (err) {
+ console.error("[ui] manual calendar addition failed:", err);
+ showManualCalMsg("Failed — try again.", "error");
+ }).finally(function () {
+ manualCalBtn.disabled = false;
+ });
+ });
 
  var DOW = ["Su","Mo","Tu","We","Th","Fr","Sa"];
  function sgtDateStr(d) { return d.toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" }); }
