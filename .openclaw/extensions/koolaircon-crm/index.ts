@@ -1420,7 +1420,7 @@ export default definePluginEntry({
 
           const result = await handleBookingCommand(
             { contactId: contact.Contact_ID, serviceType, units },
-            { notifyFn: () => {} },
+            { notifyFn: () => {}, silent: true },
           );
 
           if (!result.success) {
@@ -1493,7 +1493,7 @@ export default definePluginEntry({
           return true;
         }
         try {
-          const result = await handleConfirmSlot({ inboxId, choice }, { notifyFn: () => {} });
+          const result = await handleConfirmSlot({ inboxId, choice }, { notifyFn: () => {}, silent: true });
           if (!result.success) {
             sendUIJson(res, 200, { ok: false, message: result.message });
             return true;

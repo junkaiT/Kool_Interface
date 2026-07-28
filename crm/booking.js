@@ -71,10 +71,17 @@ function customerChannelFor(contact) {
  return (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
 }
 
-function makeNotify(notifyFn, contact, inboxId) {
+function makeNotify(notifyFn, contact, inboxId, { silent = false } = {}) {
  const send = notifyFn ?? ((text) => sendTelegram(OPERATOR_TELEGRAM_ID, text));
  return async (text) => {
  await send(text);
+ // silent: true skips the browser thread log/broadcast entirely -- used by
+ // the browser's own /api/booking/slots and /api/booking/confirm routes,
+ // which already log their own clean customer-facing message separately.
+ // Without this, the raw Telegram-formatted operator summary (with <b>/
+ // <code> tags meant for HTML parse mode) would also land in the thread,
+ // duplicating and garbling what the operator already sees in the UI.
+ if (silent) return;
  broadcastToUI({ type: 'bot-resp', inboxId, contactId: contact?.Contact_ID, channel: customerChannelFor(contact), text, timestamp: Date.now() });
  if (contact?.Channel_Contact_ID) {
  await db.insert({
@@ -238,7 +245,7 @@ async function _presentSlots({ inboxId, pending, candidateSlots, serviceType, un
 
 // ─── handleBookingCommand (/b) ────────────────────────────────────────────────
 
-export async function handleBookingCommand(args, { notifyFn } = {}) {
+export async function handleBookingCommand(args, { notifyFn, silent } = {}) {
  const { inboxId: requestedInboxId, serviceType, units, contactId: requestedContactId } = args;
 
  if (requestedContactId) {
@@ -267,7 +274,7 @@ export async function handleBookingCommand(args, { notifyFn } = {}) {
  customerMessage: placeholderMsg,
  timestamp: new Date().toISOString(),
  });
- return handleBookingCommand({ inboxId: newInboxId, serviceType, units }, { notifyFn });
+ return handleBookingCommand({ inboxId: newInboxId, serviceType, units }, { notifyFn, silent });
  }
 
  const inboxId = normalizeInboxId(requestedInboxId);
@@ -306,7 +313,7 @@ export async function handleBookingCommand(args, { notifyFn } = {}) {
  const freshContact = freshContacts.find(c => c.Contact_ID === pending.contact.Contact_ID);
  if (freshContact) Object.assign(pending.contact, freshContact);
 
- const notify = makeNotify(notifyFn, pending.contact, inboxId);
+ const notify = makeNotify(notifyFn, pending.contact, inboxId, { silent });
 
  const postalCode = pending.contact.Postal_Code;
  if (!postalCode || postalCode.length < 6) {
@@ -463,7 +470,7 @@ export async function handleMixYes(inboxId) {
 
 // ─── handleConfirmSlot (/confirm) ────────────────────────────────────────────
 
-export async function handleConfirmSlot(args, { notifyFn } = {}) {
+export async function handleConfirmSlot(args, { notifyFn, silent } = {}) {
  const { inboxId: requestedInboxId, choice, placement } = args;
  const inboxId = normalizeInboxId(requestedInboxId);
  if (!inboxId) return { success: false, message: '⚠️ Inbox ID required. Usage: /confirm INBOX-001 2 [@ HH:MM]' };
@@ -485,7 +492,7 @@ export async function handleConfirmSlot(args, { notifyFn } = {}) {
  } catch (e) { /* could not parse */ }
 
  if (!bookingContext) {
- await makeNotify(notifyFn, contact, inboxId)(
+ await makeNotify(notifyFn, contact, inboxId, { silent })(
  `⚠️ <b>${inboxId} — booking context lost (plugin restart)</b>\n` +
  `Contact: ${contact.Full_Name} (${contact.Contact_ID})\n\n` +
  `Please re-run to regenerate slots:\n` +
@@ -616,7 +623,7 @@ export async function handleConfirmSlot(args, { notifyFn } = {}) {
  pendingApprovals.set(inboxId, pending);
 
  const timeChangeLine = timeChanged ? `⚠️ <b>Time changed</b> from original offer.\n` : '';
- await makeNotify(notifyFn, pending.contact, inboxId)(
+ await makeNotify(notifyFn, pending.contact, inboxId, { silent })(
  `🧾 <b>${inboxId} — ready to confirm booking</b>\n` +
  `Contact: ${pending.contact.Full_Name} (${pending.contact.Contact_ID})\n` +
  `Slot: Option ${optionIdx} — ${slotDesc}\n` +
