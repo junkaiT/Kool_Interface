@@ -289,6 +289,17 @@ export async function handleBookingCommand(args, { notifyFn } = {}) {
  timestamp: new Date().toISOString(),
  };
  pendingApprovals.set(inboxId, pending);
+ } else if (pending.finalizationContext || pending.isManualCalEvent) {
+ // A fresh /b call always starts a new slot-offer round -- any earlier
+ // confirmed-but-unsent state (from a /confirm that was never approved
+ // before the operator ran /b again) is now stale. Without clearing it,
+ // handleOperatorApproval sees a truthy finalizationContext on the next
+ // bare INBOX-NNN approval and treats it as "finalize the old booking",
+ // deleting the whole pending record instead of sending this fresh offer
+ // -- which then makes the next /confirm fail with "context lost" even
+ // though a brand-new bookingContext was just generated below.
+ delete pending.finalizationContext;
+ delete pending.isManualCalEvent;
  }
 
  const freshContacts = await getContacts();
