@@ -318,8 +318,9 @@ async function runBCommand(argsString: string | undefined) {
     if (result.success) {
       return {
         text:
-          `✅ ${result.inboxId} — ${result.slots.length} slot(s) drafted.\n` +
-          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) drafted.\n\n` +
+          `${result.draft}\n\n` +
+          `Reply \`${result.inboxId}\` to send to customer.`,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -404,8 +405,9 @@ async function runMixyesCommand(argsString: string | undefined) {
     if (result.success) {
       return {
         text:
-          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found across all teams.\n` +
-          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found across all teams.\n\n` +
+          `${result.draft}\n\n` +
+          `Reply \`${result.inboxId}\` to send to customer.`,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -429,8 +431,9 @@ async function runMixnoCommand(argsString: string | undefined) {
     if (result.success) {
       return {
         text:
-          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found (home team).\n` +
-          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found (home team).\n\n` +
+          `${result.draft}\n\n` +
+          `Reply \`${result.inboxId}\` to send to customer.`,
       };
     }
     return { text: `⚠️ ${result.message ?? result.reason}` };
@@ -1399,9 +1402,13 @@ export default definePluginEntry({
           // #1) — resolve the open inbox for this contact and prepend it,
           // falling back to the raw Contact_ID exactly like /info and /b
           // already do for a from-scratch conversation. Bare approvals skip
-          // this since the id is already embedded in the text.
+          // this since the id is already embedded in the text — and so does
+          // any operator who typed their own id anyway (e.g. copying the
+          // "/b INBOX-001 GC 3" usage text literally), since prepending on
+          // top of that produces a malformed double-id string.
+          const restArgsHasOwnId = /^(?:IN(?:BOX)?-\d+|KA-\d{3,4})\b/i.test(restArgs);
           let argsString = restArgs;
-          if (!isBareApproval && contact?.Contact_ID) {
+          if (!isBareApproval && !restArgsHasOwnId && contact?.Contact_ID) {
             const openInbox = await findOpenInboxForContact(contact.Contact_ID);
             const resolvedId = openInbox?.inboxId || contact.Contact_ID;
             argsString = restArgs ? `${resolvedId} ${restArgs}` : resolvedId;
@@ -1426,6 +1433,18 @@ export default definePluginEntry({
           broadcastToUI({ type: 'message', message: cmdMessage });
 
           const result = await runner(argsString);
+
+          // The shared runXCommand usage/error strings (e.g. "Format: /confirm
+          // INBOX-001 2") are correct for Telegram and deliberately not forked
+          // per-channel — but they tell a browser operator to type an id they
+          // don't have (it's auto-filled above). Append a one-line, browser-only
+          // hint on the HTTP response without touching the shared text itself.
+          if (
+            result && typeof result.text === 'string' && !isBareApproval &&
+            (result.text.startsWith('❌') || result.text.startsWith('⚠️'))
+          ) {
+            result.text += '\n\n(In the browser, skip the INBOX id — just type the rest, e.g. `1` or `GC 3`.)';
+          }
 
           // registerUICommand's persistCommandResult only fires when a result
           // carries contactId/inboxId — none of the extracted runXCommand
