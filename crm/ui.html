@@ -87,7 +87,7 @@
  #compose-send { flex: 0 0 auto; padding: 8px 16px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13.5px; font-weight: 600; cursor: pointer; }
  #compose-send:disabled { background: var(--bg-active); color: var(--text-dim); cursor: default; }
  #compose-error { padding: 0 16px 8px; color: #c0392b; font-size: 12px; display: none; }
- #cal-col { width: 260px; flex: 0 0 260px; background: var(--bg-panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+ #cal-col { width: 260px; flex: 0 0 260px; background: var(--bg-panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
  #cal-col.collapsed { display: none; }
  #cal-header { padding: 10px 12px 6px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; }
  #cal-month-label { flex: 1; font-weight: 600; font-size: 13px; }
@@ -98,12 +98,46 @@
  .cal-day.today { font-weight: 700; color: var(--accent); }
  .cal-day.selected { background: var(--accent); color: #fff; }
  .cal-day.empty { cursor: default; }
- #cal-jobs { flex: 1; overflow-y: auto; padding: 8px 12px; }
+ #cal-jobs { flex: 0 0 auto; padding: 8px 12px; }
  #cal-jobs-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); margin-bottom: 6px; }
- .cal-job { background: var(--bg-hover); border-radius: 6px; padding: 7px 9px; margin-bottom: 6px; font-size: 12px; }
+ .cal-job { background: var(--bg-hover); border-radius: 6px; padding: 7px 9px; margin-bottom: 6px; font-size: 12px; cursor: pointer; }
  .cal-job-time { font-weight: 600; }
  .cal-job-team { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
  #cal-jobs-empty { color: var(--text-dim); font-size: 12px; }
+ .cal-job-detail { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 11px; display: none; }
+ .cal-job-detail.open { display: block; }
+ .cal-job-detail div { margin-bottom: 2px; }
+
+ #customer-panel .cust-field { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+ #customer-panel .cust-field label { font-size: 11px; color: var(--text-dim); width: 56px; flex: 0 0 auto; }
+ #customer-panel .cust-field input { flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; font-size: 12px; }
+ #customer-panel .save-btn { padding: 5px 12px; border: none; border-radius: 5px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 2px; }
+ #customer-panel .saved-msg { font-size: 11px; color: var(--pill-customer); margin-top: 4px; display: none; }
+ #customer-panel .saved-msg.show { display: block; }
+ #customer-panel .link-btn { background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer; padding: 0; }
+ .job-history-table { display: none; margin-top: 8px; font-size: 11px; width: 100%; border-collapse: collapse; }
+ .job-history-table.open { display: table; }
+ .job-history-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 2px 4px; }
+ .job-history-table td { padding: 2px 4px; border-top: 1px solid #f0f1f3; }
+
+ #booking-panel { border-top: 1px solid var(--border); padding: 10px 12px; flex: 0 0 auto; }
+ #booking-panel h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+ #booking-panel .row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }
+ #booking-panel .row label { font-size: 11px; color: var(--text-dim); width: 44px; flex: 0 0 auto; }
+ #booking-panel select, #booking-panel input[type=number] { flex: 1; padding: 4px 6px; border: 1px solid var(--border); border-radius: 5px; font-size: 11.5px; }
+ #booking-find-btn { background: #fff; color: var(--accent); border: 1px solid var(--accent); width: 100%; padding: 6px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
+ #booking-find-btn:disabled { opacity: .6; cursor: default; }
+ #booking-slots { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+ .slot-btn { padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-hover); font-size: 11px; cursor: pointer; text-align: left; }
+ .slot-btn:hover { border-color: var(--accent); }
+ .slot-btn.picked { background: var(--accent); color: #fff; border-color: var(--accent); }
+ .slot-btn .team { display: block; font-size: 10px; color: var(--text-dim); }
+ .slot-btn.picked .team { color: #dbe6ff; }
+ #booking-confirm-area { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; display: none; }
+ #booking-confirm-area button { width: 100%; margin-top: 6px; padding: 6px; border: none; border-radius: 5px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+ #booking-msg { font-size: 11px; margin-top: 6px; display: none; }
+ #booking-msg.error { color: #c0392b; }
+ #booking-msg.success { color: var(--pill-customer); }
 </style>
 </head>
 <body>
@@ -153,6 +187,26 @@
  <div id="cal-jobs-heading">Jobs</div>
  <div id="cal-jobs-list"><div id="cal-jobs-empty" style="color:var(--text-dim);font-size:12px">Select a date.</div></div>
  </div>
+ <div id="booking-panel">
+ <h3>New booking</h3>
+ <div class="row">
+ <label>Service</label>
+ <select id="booking-service">
+ <option value="GC">GC — General Clean</option>
+ <option value="CW">CW — Chemical Wash</option>
+ <option value="CO">CO — Chemical Overhaul</option>
+ <option value="IN">IN — Installation</option>
+ </select>
+ </div>
+ <div class="row">
+ <label>Units</label>
+ <input type="number" id="booking-units" value="1" min="1">
+ </div>
+ <button id="booking-find-btn">Find slots</button>
+ <div id="booking-slots"></div>
+ <div id="booking-confirm-area"></div>
+ <div id="booking-msg"></div>
+ </div>
  </div>
 </div>
 <script>
@@ -160,9 +214,11 @@
  var state = {
  threads: [],
  activeConversationId: null,
+ activeContactId: null,
  calMonth: new Date(),
  calSelectedDate: null,
  lastUpdateSince: 0,
+ booking: { inboxId: null, slots: [], chosenIndex: null },
  };
 
  function el(tag, cls, text) {
@@ -250,6 +306,8 @@
 
  function openThread(thread) {
  state.activeConversationId = thread.conversationId;
+ state.activeContactId = thread.contactId || null;
+ resetBookingPanel();
  renderThreadList();
  var avatar = document.getElementById("chat-avatar");
  avatar.className = "avatar channel-" + thread.channel;
@@ -302,6 +360,25 @@
  return row;
  }
 
+ function custFieldRow(label, inputEl) {
+ var row = el("div", "cust-field");
+ row.appendChild(el("label", null, label));
+ row.appendChild(inputEl);
+ return row;
+ }
+
+ function renderJobHistoryTable(jobHistory) {
+ var table = document.createElement("table");
+ table.className = "job-history-table";
+ var rowsHtml = (jobHistory || []).map(function (j) {
+ var svc = [j.service, j.units ? "×" + j.units : null].filter(Boolean).join(" ");
+ return "<tr><td>" + (j.date || "") + "</td><td>" + svc + "</td><td>" + (j.amount ? "$" + j.amount : "") + "</td><td>" + (j.paymentStatus || "") + "</td></tr>";
+ }).join("");
+ table.innerHTML = "<tr><th>Date</th><th>Job</th><th>Amount</th><th>Status</th></tr>" +
+ (rowsHtml || "<tr><td colspan='4'>No jobs yet.</td></tr>");
+ return table;
+ }
+
  function renderCustomer(customer) {
  var jobsCol = document.getElementById("customer-col-jobs");
  var houseCol = document.getElementById("customer-col-household");
@@ -310,15 +387,60 @@
  houseCol.innerHTML = "<h3>Household</h3>";
  propCol.innerHTML = "<h3>Property</h3>";
  if (!customer) { jobsCol.appendChild(el("div", null, "No customer record.")); return; }
+
  jobsCol.appendChild(el("div", null, customer.jobs && customer.jobs.lastJobDate ? "Last: " + customer.jobs.lastJobDate + " · " + (customer.jobs.lastJobService || "") + " ×" + (customer.jobs.lastJobUnits || "?") : "No jobs yet."));
- jobsCol.appendChild(el("div", null, "Total jobs: " + (customer.jobs ? customer.jobs.totalJobs : 0)));
+ var totalRow = el("div", null, "Total jobs: " + (customer.jobs ? customer.jobs.totalJobs : 0) + " ");
+ var expandBtn = el("button", "link-btn", "Expand");
+ totalRow.appendChild(expandBtn);
+ jobsCol.appendChild(totalRow);
+ var histTable = renderJobHistoryTable(customer.jobHistory);
+ jobsCol.appendChild(histTable);
+ expandBtn.addEventListener("click", function () {
+ var open = histTable.classList.toggle("open");
+ expandBtn.textContent = open ? "Hide" : "Expand";
+ });
+
  houseCol.appendChild(flagRow("Elderly", customer.household && customer.household.elderly));
  houseCol.appendChild(flagRow("Children", customer.household && customer.household.children));
  houseCol.appendChild(flagRow("Pets", customer.household && customer.household.pets));
  houseCol.appendChild(flagRow("Google review", customer.household && customer.household.googleReview));
- propCol.appendChild(el("div", null, (customer.property && customer.property.address) || "(no address)"));
- propCol.appendChild(el("div", null, (customer.property && customer.property.postalCode) || ""));
+
+ // Editable Address / Postal / Phone — POSTs to /api/customer on Save.
+ // Lives here, in the existing top customer-panel strip, not a new panel.
+ var addrInput = el("input"); addrInput.value = (customer.property && customer.property.address) || "";
+ var postalInput = el("input"); postalInput.value = (customer.property && customer.property.postalCode) || "";
+ var phoneInput = el("input"); phoneInput.value = customer.phone || "";
+ propCol.appendChild(custFieldRow("Address", addrInput));
+ propCol.appendChild(custFieldRow("Postal", postalInput));
+ propCol.appendChild(custFieldRow("Phone", phoneInput));
+ var saveBtn = el("button", "save-btn", "Save");
+ var savedMsg = el("div", "saved-msg", "Saved");
+ propCol.appendChild(saveBtn);
+ propCol.appendChild(savedMsg);
  propCol.appendChild(el("div", null, customer.property && customer.property.assignedTeam ? "Team: " + customer.property.assignedTeam : "No team assigned"));
+ saveBtn.addEventListener("click", function () {
+ if (!state.activeContactId) return;
+ savedMsg.classList.remove("show");
+ saveBtn.disabled = true;
+ fetch("/api/customer", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({
+ contactId: state.activeContactId,
+ address: addrInput.value,
+ postalCode: postalInput.value,
+ phone: phoneInput.value,
+ }),
+ }).then(function (r) {
+ return r.json().then(function (d) { if (!r.ok || !d.ok) throw new Error(d.error || "save failed"); return d; });
+ }).then(function () {
+ savedMsg.classList.add("show");
+ }).catch(function (err) {
+ console.error("[ui] save customer failed:", err);
+ }).finally(function () {
+ saveBtn.disabled = false;
+ });
+ });
  }
 
  function updateThreadPreview(m) {
@@ -417,6 +539,144 @@
  });
  document.getElementById("thread-search").addEventListener("input", renderThreadList);
 
+ // ── Booking panel: service+units → slot buttons → confirm → send ───────────
+ // Structured values throughout, so this talks to /api/booking/slots and
+ // /api/booking/confirm rather than the text-command path. The final "Send
+ // to customer" step reuses the existing /api/command bare-approval flow —
+ // by that point the browser already knows the inboxId from the confirm
+ // response, same as typing INBOX-NNN into the compose box.
+ var bookingFindBtn = document.getElementById("booking-find-btn");
+ var bookingSlotsEl = document.getElementById("booking-slots");
+ var bookingConfirmArea = document.getElementById("booking-confirm-area");
+ var bookingMsgEl = document.getElementById("booking-msg");
+
+ function clearBookingSlotsAndConfirm() {
+ state.booking = { inboxId: null, slots: [], chosenIndex: null };
+ bookingSlotsEl.innerHTML = "";
+ bookingConfirmArea.style.display = "none";
+ bookingConfirmArea.innerHTML = "";
+ }
+
+ function resetBookingPanel() {
+ clearBookingSlotsAndConfirm();
+ bookingMsgEl.style.display = "none";
+ bookingMsgEl.textContent = "";
+ bookingMsgEl.className = "";
+ }
+
+ function showBookingMsg(text, cls) {
+ bookingMsgEl.textContent = text;
+ bookingMsgEl.className = cls || "";
+ bookingMsgEl.style.display = "block";
+ }
+
+ function fmtSlotMins(mins) {
+ if (mins === undefined || mins === null) return "";
+ var h = Math.floor(mins / 60), m = mins % 60;
+ var period = h >= 12 ? "pm" : "am";
+ var h12 = h % 12 || 12;
+ return m === 0 ? (h12 + period) : (h12 + ":" + String(m).padStart(2, "0") + period);
+ }
+
+ function renderBookingSlots() {
+ bookingSlotsEl.innerHTML = "";
+ state.booking.slots.forEach(function (slot, idx) {
+ var btn = el("button", "slot-btn");
+ var timeStr = fmtSlotMins(slot.placedStartMins) + "–" + fmtSlotMins(slot.placedEndMins);
+ var main = el("span", null, (slot.Day || "") + " " + (slot.Date || "") + ", " + timeStr);
+ var team = el("span", "team", slot.Team_Name || "");
+ btn.appendChild(main);
+ btn.appendChild(team);
+ btn.addEventListener("click", function () { pickSlot(idx, btn); });
+ bookingSlotsEl.appendChild(btn);
+ });
+ }
+
+ function findSlots() {
+ if (!state.activeConversationId && !state.activeContactId) return;
+ resetBookingPanel();
+ bookingFindBtn.disabled = true;
+ var service = document.getElementById("booking-service").value;
+ var units = document.getElementById("booking-units").value;
+ fetch("/api/booking/slots", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({
+ conversationId: state.activeConversationId,
+ contactId: state.activeContactId,
+ serviceType: service,
+ units: units,
+ }),
+ }).then(function (r) { return r.json(); }).then(function (data) {
+ if (!data.ok) {
+ if (data.action === "mix_prompt_sent") {
+ showBookingMsg("Repeat customer — home team's next slot is over a week out (" + data.firstSlotDate + "). A message was drafted asking if they're open to another team; use /mixyes or /mixno once they reply.", "error");
+ } else {
+ showBookingMsg(data.message || "No slots found.", "error");
+ }
+ return;
+ }
+ state.booking.inboxId = data.inboxId;
+ state.booking.slots = data.slots || [];
+ renderBookingSlots();
+ if (data.respMessage) renderIncomingMessage(data.respMessage);
+ state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+ renderThreadList();
+ }).catch(function (err) {
+ console.error("[ui] find slots failed:", err);
+ showBookingMsg("Failed to find slots — try again.", "error");
+ }).finally(function () {
+ bookingFindBtn.disabled = false;
+ });
+ }
+
+ function pickSlot(idx, btnEl) {
+ Array.prototype.forEach.call(bookingSlotsEl.querySelectorAll(".slot-btn"), function (b) { b.classList.remove("picked"); });
+ btnEl.classList.add("picked");
+ bookingMsgEl.style.display = "none";
+ fetch("/api/booking/confirm", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({ inboxId: state.booking.inboxId, choice: idx + 1 }),
+ }).then(function (r) { return r.json(); }).then(function (data) {
+ if (!data.ok) { showBookingMsg(data.message || "Could not confirm slot.", "error"); return; }
+ state.booking.chosenIndex = idx;
+ bookingConfirmArea.innerHTML = "";
+ bookingConfirmArea.appendChild(el("div", null, "Slot " + (idx + 1) + " confirmed" + (data.price ? " — $" + data.price + " SGD" : "") + "."));
+ var sendBtn = el("button", null, "Send to customer");
+ sendBtn.addEventListener("click", sendBookingToCustomer);
+ bookingConfirmArea.appendChild(sendBtn);
+ bookingConfirmArea.style.display = "block";
+ }).catch(function (err) {
+ console.error("[ui] confirm slot failed:", err);
+ showBookingMsg("Failed to confirm — try again.", "error");
+ });
+ }
+
+ function sendBookingToCustomer() {
+ if (!state.booking.inboxId || !state.activeConversationId) return;
+ fetch("/api/command", {
+ method: "POST",
+ headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+ body: JSON.stringify({ conversationId: state.activeConversationId, text: state.booking.inboxId }),
+ }).then(function (r) {
+ return r.json().then(function (d) { if (!r.ok || !d.ok) throw new Error(d.error || "send failed"); return d; });
+ }).then(function (data) {
+ renderIncomingMessage(data.cmdMessage);
+ renderIncomingMessage(data.respMessage);
+ state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
+ renderThreadList();
+ state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
+ clearBookingSlotsAndConfirm();
+ showBookingMsg("Sent to customer.", "success");
+ }).catch(function (err) {
+ console.error("[ui] send to customer failed:", err);
+ showBookingMsg("Failed to send — try again.", "error");
+ });
+ }
+
+ bookingFindBtn.addEventListener("click", findSlots);
+
  var DOW = ["Su","Mo","Tu","We","Th","Fr","Sa"];
  function sgtDateStr(d) { return d.toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" }); }
 
@@ -460,6 +720,19 @@
  var svc = [ev.serviceType, ev.units ? "×" + ev.units : null].filter(Boolean).join(" ");
  if (svc) card.appendChild(el("div", null, svc));
  card.appendChild(el("div", "cal-job-team", ev.team || ""));
+ // Click to expand: address/postal/phone/price already parsed server-side
+ // from the event's structured description block (ev.meta).
+ var meta = ev.meta || {};
+ var detail = el("div", "cal-job-detail");
+ var lines = [];
+ if (meta.address) lines.push(meta.address);
+ if (meta.postal) lines.push("Postal: " + meta.postal);
+ if (meta.phone) lines.push(meta.phone);
+ if (meta.price_sgd) lines.push("$" + meta.price_sgd + " SGD" + (meta.zone ? " · Zone " + meta.zone : ""));
+ if (lines.length === 0) lines.push("No additional details.");
+ lines.forEach(function (line) { detail.appendChild(el("div", null, line)); });
+ card.appendChild(detail);
+ card.addEventListener("click", function () { detail.classList.toggle("open"); });
  listEl.appendChild(card);
  });
  }).catch(function (err) { console.error("[ui] failed to load calendar day:", err); listEl.textContent = "Failed to load."; });

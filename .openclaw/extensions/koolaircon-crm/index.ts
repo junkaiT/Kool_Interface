@@ -24,9 +24,9 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact, updateContact } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
-import { listEvents } from "../../../crm/calendar.js";
+import { listEvents, parseDescription } from "../../../crm/calendar.js";
 import { getTeamCalendars } from "../../../crm/scheduler.js";
 import { pollTechnicianSubmissions } from "../../../crm/module3.js";
 import { handleSendPhotosCommand, isPhotoYesReply } from "../../../crm/crm.js";
@@ -1121,6 +1121,49 @@ export default definePluginEntry({
 
  api.registerHttpRoute({ path: '/api/customer', auth: 'plugin', match: 'exact', handler: async (req: any, res: any) => {
  if (!requireUIAuth(req, res)) return true;
+ // POST — save Address/Postal/Phone from the editable panel. Structured
+ // values already in hand (a form, not typed text), so this calls
+ // updateContact() directly rather than routing through handleInfoCommand's
+ // text-oriented namedFields/positional parsing (crm/crm.js) — same three
+ // fields /info's positional mode covers, just via a real form instead of a
+ // pipe-delimited string. Whitelisted to exactly these three column names,
+ // matching handleInfoCommand's own ALLOWED_FIELDS subset for this trio.
+ if (req.method === 'POST') {
+ let rawBody = '';
+ await new Promise<void>((resolve, reject) => {
+ req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+ req.on('end', () => resolve());
+ req.on('error', reject);
+ });
+ let parsed: any;
+ try {
+ parsed = JSON.parse(rawBody);
+ } catch {
+ sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+ return true;
+ }
+ const postContactId = String(parsed?.contactId || '');
+ if (!postContactId) {
+ sendUIJson(res, 400, { error: 'contactId is required' });
+ return true;
+ }
+ const fields: Record<string, string> = {};
+ if (typeof parsed?.address === 'string') fields.Address = parsed.address.trim();
+ if (typeof parsed?.postalCode === 'string') fields.Postal_Code = parsed.postalCode.trim();
+ if (typeof parsed?.phone === 'string') fields.Phone = parsed.phone.trim();
+ if (Object.keys(fields).length === 0) {
+ sendUIJson(res, 400, { error: 'No editable fields provided (address, postalCode, phone)' });
+ return true;
+ }
+ try {
+ await updateContact(postContactId, fields);
+ sendUIJson(res, 200, { ok: true, contactId: postContactId });
+ } catch (err) {
+ api.logger.error('[ui] POST /api/customer error:', err instanceof Error ? err.message : String(err));
+ sendUIJson(res, 502, { error: 'Failed to save contact.' });
+ }
+ return true;
+ }
  try {
  const urlObj = new URL(req.url, 'http://localhost');
  let contactId = urlObj.searchParams.get('contactId') || '';
@@ -1146,12 +1189,24 @@ export default definePluginEntry({
  customer: {
  name: contact.Full_Name || '',
  status: contact.Contact_Status || '',
+ phone: contact.Phone || '',
  jobs: {
  lastJobDate: lastJob?.Job_Date || null,
  lastJobService: lastJob?.Service_Type || null,
  lastJobUnits: lastJob?.Units_Serviced || lastJob?.Units_In_Home || null,
  totalJobs: jobs.length,
  },
+ // Full chronological history for the "Expand job history" panel —
+ // jobs is already sorted newest-first above, reused as-is.
+ jobHistory: jobs.map((j: any) => ({
+ jobId: j.Job_ID || '',
+ date: j.Job_Date || '',
+ service: j.Service_Type || '',
+ units: j.Units_Serviced || j.Units_In_Home || '',
+ amount: j.Amount_SGD || '',
+ paymentStatus: j.Payment_Status || '',
+ notes: j.Notes || '',
+ })),
  household: {
  elderly: contact.Elderly_In_Home === 'TRUE',
  children: contact.Children_In_Home === 'TRUE',
@@ -1205,6 +1260,10 @@ export default definePluginEntry({
         const contactId = contactIdMatch ? contactIdMatch[0] : null;
        const status = ev.status === 'confirmed' ? 'confirmed' : ev.status === 'cancelled' ? 'cancelled' : 'pending';
        const contact = contactId ? (allContacts || []).find((c) => c.Contact_ID === contactId) : null;
+       // The event description already carries a structured block (address,
+       // postal, phone, price_sgd, zone, ...) written by calBuildDescription
+       // at job-creation time (crm/crm.js) -- parse it here so the browser's
+       // job-card expansion has real fields to show, not raw description text.
        allEvents.push({
          id: ev.id,
          title: tit,
@@ -1216,6 +1275,7 @@ export default definePluginEntry({
          end: ev.end?.dateTime || ev.end?.date,
          status,
          description: ev.description || '',
+         meta: parseDescription(ev.description),
          calendarId: team.Calendar_ID,
          team: team.Team_Name,
        });
@@ -1302,6 +1362,169 @@ export default definePluginEntry({
         } catch (err) {
           api.logger.error('[ui] /api/send error:', err instanceof Error ? err.message : String(err));
           sendUIJson(res, 502, { error: 'Failed to send message.' });
+        }
+        return true;
+      },
+    });
+
+    // ── POST /api/booking/slots — service+units picker, no text parsing ────────
+    // Structured values already in hand, so this calls handleBookingCommand
+    // directly with a contactId (which auto-creates/reuses the open inbox
+    // itself, crm/booking.js:244-271) instead of going through /api/command's
+    // text-parsing + findOpenInboxForContact resolution. notifyFn is a no-op
+    // per the Phase 7 plan's confirmed design — the operator is already
+    // looking at this in the browser, no need to also ping their Telegram.
+    api.registerHttpRoute({
+      path: '/api/booking/slots',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        if (req.method !== 'POST') {
+          sendUIJson(res, 405, { error: 'Method not allowed' });
+          return true;
+        }
+        let rawBody = '';
+        await new Promise<void>((resolve, reject) => {
+          req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+          req.on('end', () => resolve());
+          req.on('error', reject);
+        });
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+          return true;
+        }
+        const serviceType = String(parsed?.serviceType || '').toUpperCase();
+        const units = parseInt(parsed?.units, 10);
+        if (!serviceType || !units || units < 1) {
+          sendUIJson(res, 400, { error: 'serviceType and units are required' });
+          return true;
+        }
+        try {
+          let conversationId = String(parsed?.conversationId || '');
+          const contactId = String(parsed?.contactId || '');
+          const contacts = await getContacts();
+          let contact = conversationId
+            ? contacts.find((c: any) => c.Channel_Contact_ID === conversationId)
+            : null;
+          if (!contact && contactId) {
+            contact = contacts.find((c: any) => c.Contact_ID === contactId);
+          }
+          if (!contact) {
+            sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
+            return true;
+          }
+
+          const result = await handleBookingCommand(
+            { contactId: contact.Contact_ID, serviceType, units },
+            { notifyFn: () => {} },
+          );
+
+          if (!result.success) {
+            sendUIJson(res, 200, { ok: false, reason: result.reason, message: result.message });
+            return true;
+          }
+          if (result.action === 'mix_prompt_sent') {
+            sendUIJson(res, 200, { ok: true, inboxId: result.inboxId, action: 'mix_prompt_sent', firstSlotDate: result.firstSlotDate });
+            return true;
+          }
+
+          // Log the draft to the thread the same way /api/command logs a
+          // command result, so it appears in the browser immediately.
+          const channel = (contact.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+          const respMessage = {
+            conversation_id: contact.Channel_Contact_ID,
+            channel,
+            direction: 'outbound',
+            message_type: 'bot-resp',
+            text: result.draft,
+            timestamp: Date.now(),
+            sender: 'operator',
+          };
+          try {
+            await db.insert(respMessage);
+          } catch (e) {
+            api.logger.error('[ui] /api/booking/slots db log failed:', e instanceof Error ? e.message : String(e));
+          }
+          broadcastToUI({ type: 'message', message: respMessage });
+
+          sendUIJson(res, 200, { ok: true, inboxId: result.inboxId, slots: result.slots, draft: result.draft, respMessage });
+        } catch (err) {
+          api.logger.error('[ui] /api/booking/slots error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 502, { error: 'Failed to find slots.' });
+        }
+        return true;
+      },
+    });
+
+    // ── POST /api/booking/confirm — click a slot, no text parsing ──────────────
+    // Browser already has inboxId from the /api/booking/slots response above,
+    // so no contact resolution is needed here at all.
+    api.registerHttpRoute({
+      path: '/api/booking/confirm',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        if (req.method !== 'POST') {
+          sendUIJson(res, 405, { error: 'Method not allowed' });
+          return true;
+        }
+        let rawBody = '';
+        await new Promise<void>((resolve, reject) => {
+          req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+          req.on('end', () => resolve());
+          req.on('error', reject);
+        });
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+          return true;
+        }
+        const inboxId = String(parsed?.inboxId || '');
+        const choice = parsed?.choice;
+        if (!inboxId || choice === undefined) {
+          sendUIJson(res, 400, { error: 'inboxId and choice are required' });
+          return true;
+        }
+        try {
+          const result = await handleConfirmSlot({ inboxId, choice }, { notifyFn: () => {} });
+          if (!result.success) {
+            sendUIJson(res, 200, { ok: false, message: result.message });
+            return true;
+          }
+
+          const inboxRow = await findInboxById(result.inboxId);
+          const contacts = await getContacts();
+          const contact = inboxRow ? contacts.find((c: any) => c.Contact_ID === inboxRow.row.Contact_ID) : null;
+          if (contact?.Channel_Contact_ID) {
+            const channel = (contact.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+            const respMessage = {
+              conversation_id: contact.Channel_Contact_ID,
+              channel,
+              direction: 'outbound',
+              message_type: 'bot-resp',
+              text: `Slot ${choice} selected for ${result.inboxId}. Draft confirmation ready — send it to the customer to create the job.`,
+              timestamp: Date.now(),
+              sender: 'operator',
+            };
+            try {
+              await db.insert(respMessage);
+            } catch (e) {
+              api.logger.error('[ui] /api/booking/confirm db log failed:', e instanceof Error ? e.message : String(e));
+            }
+            broadcastToUI({ type: 'message', message: respMessage });
+          }
+
+          sendUIJson(res, 200, { ok: true, inboxId: result.inboxId, price: result.price, timeChanged: result.timeChanged });
+        } catch (err) {
+          api.logger.error('[ui] /api/booking/confirm error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 502, { error: 'Failed to confirm slot.' });
         }
         return true;
       },
