@@ -24,7 +24,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
 import { listEvents } from "../../../crm/calendar.js";
 import { getTeamCalendars } from "../../../crm/scheduler.js";
@@ -122,6 +122,345 @@ function registerUICommand(api: any, config: any) {
  });
 }
 
+// ── Extracted command bodies ─────────────────────────────────────────────────
+// Each of these was previously inline inside its registerUICommand(...) call.
+// Extracted so both the Telegram command path (below) and the browser's
+// POST /api/command (Phase 6) call exactly the same logic — two copies of
+// the same parsing regex drifting apart independently is exactly the class
+// of bug the Phase 4.5 reconciliation pass spent a long time fixing.
+
+async function runInfoCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return {
+      text:
+        "⚠️ Usage:\n" +
+        "• `/info INBOX-001 123 Main St | 410123 | 91234567` — positional\n" +
+        "• `/info INBOX-001 Full_Name: Mrs Tan | Phone: 91234567` — named fields\n" +
+        "• `/info KA-0001 Full_Name: Mrs Tan` — update by Contact_ID\n\n" +
+        "Updatable fields: Full_Name, Address, Postal_Code, Phone, Email, Type, Notes",
+    };
+  }
+
+  // Parse prefix: INBOX-NNN or KA-XXXX
+  const prefixMatch = args.match(/^(IN(?:BOX)?-\d+|KA-\d{3,4})\s+(.+)$/i);
+  if (!prefixMatch) {
+    return { text: "❌ Format: `/info INBOX-001 ...` or `/info KA-0001 ...`" };
+  }
+
+  const [, prefix, rest] = prefixMatch;
+
+  // Check if named field format (contains "FieldName:")
+  const isNamed = /[A-Za-z_]+\s*:/.test(rest);
+
+  if (isNamed) {
+    // Parse named fields: Full_Name: Mrs Tan | Phone: 91234567
+    const namedFields: Record<string, string> = {};
+    const parts = rest.split('|').map(s => s.trim());
+    for (const part of parts) {
+      const m = part.match(/^([A-Za-z_]+)\s*:\s*(.+)$/);
+      if (m) namedFields[m[1].trim()] = m[2].trim();
+    }
+    try {
+      const result = await handleInfoCommand({
+        inboxId: prefix, namedFields,
+      });
+      if (result.success) return { text: `✅ ${result.inboxId} — contact updated.` };
+      return { text: `⚠️ ${result.message}` };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { text: `❌ Error: ${msg}`, isError: true };
+    }
+  } else {
+    // Positional format: address | postal | phone
+    const m = rest.match(/^(.+?)\s*\|\s*(\d{6})\s*\|\s*([\d\s+\-]+)$/);
+    if (!m) {
+      return {
+        text:
+          "❌ Positional format: `/info INBOX-001 <address> | <6-digit postal> | <phone>`\n" +
+          "Or named: `/info INBOX-001 Full_Name: Mrs Tan | Phone: 91234567`",
+      };
+    }
+    const [, address, postalCode, phone] = m;
+    try {
+      const result = await handleInfoCommand({
+        inboxId: prefix,
+        address: address.trim(),
+        postalCode: postalCode.trim(),
+        phone: phone.trim(),
+      });
+      if (result.success) {
+        return {
+          text:
+            `✅ ${result.inboxId} — contact details saved.\n` +
+            `Now run: \`/b ${result.inboxId} GC 3\` to generate booking slots.`,
+        };
+      }
+      return { text: `⚠️ ${result.message}` };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { text: `❌ Error: ${msg}`, isError: true };
+    }
+  }
+}
+
+async function runConfirmCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return {
+      text:
+        "⚠️ Usage:\n" +
+        "• `/confirm INBOX-001 2` — earliest fit in slot 2\n" +
+        "• `/confirm INBOX-001 2 @ 14:30` — start at 14:30 within slot 2\n" +
+        "• `/confirm INBOX-001 2 @ 15:15-16:15` — hardcoded window",
+    };
+  }
+
+  // Parse: INBOX-001 2 [@ HH:MM] [@ HH:MM-HH:MM]
+  const m = args.match(/^(IN(?:BOX)?-\d+)\s+(\d+)(?:\s*@\s*(\d{1,2}:\d{2})(?:\s*-\s*(\d{1,2}:\d{2}))?)?\s*$/i);
+  if (!m) {
+    return {
+      text:
+        "❌ Format:\n" +
+        "• `/confirm INBOX-001 2`\n" +
+        "• `/confirm INBOX-001 2 @ 14:30`\n" +
+        "• `/confirm INBOX-001 2 @ 15:15-16:15`",
+    };
+  }
+
+  const [, inboxId, choice, startTime, endTime] = m;
+  const placement = startTime ? { start: startTime, end: endTime } : undefined;
+  try {
+    const result = await handleConfirmSlot({
+      inboxId: inboxId.trim(),
+      choice: choice.trim(),
+      placement,
+    });
+    if (result.success) {
+      const changeNote = result.timeChanged ? " (time updated)" : "";
+      return {
+        text:
+          `✅ ${result.inboxId} — slot ${result.option} selected${changeNote}.\n` +
+          `Draft confirmation ready. Reply \`${result.inboxId}\` (or \`/in ${result.inboxId}\`) to send + create job.`,
+      };
+    }
+    return { text: `⚠️ ${result.message ?? result.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ Error: ${msg}`, isError: true };
+  }
+}
+
+async function runConfirmBCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return {
+      text:
+        "⚠️ Usage: `/confirmb INBOX-003`\n\n" +
+        "Looks up the calendar event tagged with this inbox id in the **Kool Aircon Bookings** Google Calendar.\n" +
+        "If you created it manually, put the inbox id in the title (e.g. `KA-0003 GC ×2 INBOX-003`) or in the description.\n" +
+        "Then approve with `INBOX-003` to send the confirmation and create the job.",
+    };
+  }
+  const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
+  if (!m) {
+    return { text: "❌ Format: `/confirmb INBOX-003`" };
+  }
+  try {
+    const result = await handleConfirmBooking({ inboxId: m[1].toUpperCase() });
+    if (result.success) {
+      return {
+        text:
+          `✅ ${result.inboxId} — calendar event matched (${result.start} ${result.time}).\n` +
+          `Draft confirmation ready. Reply \`${result.inboxId}\` to send + create job.`,
+      };
+    }
+    return { text: `⚠️ ${result.message ?? result.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ Error: ${msg}`, isError: true };
+  }
+}
+
+async function runBCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return {
+      text:
+        "⚠️ Usage: `/b INBOX-001 GC 3`\n" +
+        "Postal code is pulled from the saved contact record (set with /info).\n\n" +
+        "Service codes: GC (General Clean), CW (Chemical Wash), CO (Chemical Overhaul), IN (Installation)",
+    };
+  }
+
+  // Format: INBOX-001 GC 3  OR  KA-0004 GC 3
+  const m = args.match(/^(IN(?:BOX)?-\d+|KA-\d{3,4})\s+([A-Z]{2})\s+(\d{1,2})$/i);
+  if (!m) {
+    return {
+      text:
+        "❌ Format: `/b INBOX-001 <service> <units>`\n" +
+        "Example: `/b INBOX-001 GC 3`\n" +
+        "Run `/info INBOX-001 ...` first to save the customer's postal code.",
+    };
+  }
+
+  const [, prefix, serviceType, unitsStr] = m;
+  const prefixUpper = prefix.toUpperCase();
+  const isContactId = prefixUpper.startsWith("KA-");
+
+  try {
+    const result = await handleBookingCommand({
+      inboxId: !isContactId ? prefixUpper : undefined,
+      contactId: isContactId ? prefixUpper : undefined,
+      serviceType: serviceType.toUpperCase(),
+      units: parseInt(unitsStr, 10),
+    });
+    if (result.success) {
+      return {
+        text:
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) drafted.\n` +
+          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+      };
+    }
+    return { text: `⚠️ ${result.message ?? result.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ Error: ${msg}`, isError: true };
+  }
+}
+
+async function runInCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return { text: "⚠️ Usage: `/in INBOX-001` (send draft) or `/in INBOX-001 your text` (override)" };
+  }
+  try {
+    const result = await handleOperatorApproval({ text: args });
+    if (result.success) {
+      return { text: `✅ ${result.inboxId} processed.` };
+    }
+    return { text: `⚠️ ${result.reason ?? "no_match"} — check Telegram for the pending queue.` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ Error: ${msg}`, isError: true };
+  }
+}
+
+async function runCalinfoCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return {
+      text:
+        "⚠️ Usage: `/calinfo INBOX-006 GC 3`\n\n" +
+        "Service codes: GC (General Clean), CW (Chemical Wash), " +
+        "CO (Chemical Overhaul), IN (Installation)",
+    };
+  }
+
+  const m = args.match(/^(IN(?:BOX)?-\d+)\s+([A-Z]{2})\s+(\d{1,2})$/i);
+  if (!m) {
+    return {
+      text:
+        "❌ Format: `/calinfo INBOX-006 GC 3`\n" +
+        "Service codes: GC, CW, CO, IN",
+    };
+  }
+
+  const [, inboxId, serviceType, unitsStr] = m;
+  try {
+    const result = await handleCalInfo({
+      inboxId:     inboxId.toUpperCase(),
+      serviceType: serviceType.toUpperCase(),
+      units:       parseInt(unitsStr, 10),
+    });
+    if (result.success) {
+      return {
+        text:
+          `✅ ${result.inboxId} — service set to ${result.serviceType} × ${result.units} units.\n\n` +
+          (result.readyToConfirm
+            ? `Draft confirmation ready. Reply \`${result.inboxId}\` to send to customer.`
+            : `Still missing: ${result.stillMissing.join(', ')}.\n` +
+              `Run /info ${result.inboxId} [address] | [postal] | [phone] to complete.`),
+      };
+    }
+    return { text: `⚠️ ${result.message}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ /calinfo error: ${msg}`, isError: true };
+  }
+}
+
+async function runMixyesCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return { text: "⚠️ Usage: `/mixyes INBOX-005`\n\nRe-runs the slot search without team filter so any team can take the job." };
+  }
+  const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
+  if (!m) {
+    return { text: "❌ Format: `/mixyes INBOX-005`" };
+  }
+  try {
+    const result = await handleMixYes(m[1].toUpperCase());
+    if (result.success) {
+      return {
+        text:
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found across all teams.\n` +
+          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+      };
+    }
+    return { text: `⚠️ ${result.message ?? result.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ /mixyes error: ${msg}`, isError: true };
+  }
+}
+
+async function runMixnoCommand(argsString: string | undefined) {
+  const args = argsString?.trim();
+  if (!args) {
+    return { text: "⚠️ Usage: `/mixno INBOX-005`\n\nRe-runs the slot search with the customer's home team only." };
+  }
+  const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
+  if (!m) {
+    return { text: "❌ Format: `/mixno INBOX-005`" };
+  }
+  try {
+    const result = await handleMixNo(m[1].toUpperCase());
+    if (result.success) {
+      return {
+        text:
+          `✅ ${result.inboxId} — ${result.slots.length} slot(s) found (home team).\n` +
+          `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
+      };
+    }
+    return { text: `⚠️ ${result.message ?? result.reason}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `❌ /mixno error: ${msg}`, isError: true };
+  }
+}
+
+// Unlike the others, the original sendphotos handler called reply() directly
+// and only on failure — successful runs never returned {text}, so they never
+// went through registerUICommand's broadcast/persist wrapper at all. Unified
+// here to the same {text}-always convention as every other command: a
+// successful /sendphotos run now also gets logged + broadcast, closing that
+// gap, and the Telegram registration below reproduces the exact same
+// user-visible behavior (a reply only on failure) on top of this.
+async function runSendphotosCommand(argsString: string | undefined) {
+  const inboxId = (argsString || '').trim();
+  if (!inboxId) {
+    return { text: '⚠️ Usage: /sendphotos INBOX-001' };
+  }
+  const force = inboxId.toLowerCase().endsWith(' force');
+  const cleanId = inboxId.replace(/\s+force$/i, '').trim();
+  const result = await handleSendPhotosCommand(cleanId, force);
+  if (!result.success && result.message) {
+    return { text: result.message };
+  }
+  return result.success ? { text: `✅ Photo bundle sent for ${cleanId}.` } : { text: '⚠️ Could not send photos.' };
+}
+
 export default definePluginEntry({
   id: "koolaircon-crm",
   name: "KoolAircon CRM",
@@ -137,78 +476,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return {
-            text:
-              "⚠️ Usage:\n" +
-              "• `/info INBOX-001 123 Main St | 410123 | 91234567` — positional\n" +
-              "• `/info INBOX-001 Full_Name: Mrs Tan | Phone: 91234567` — named fields\n" +
-              "• `/info KA-0001 Full_Name: Mrs Tan` — update by Contact_ID\n\n" +
-              "Updatable fields: Full_Name, Address, Postal_Code, Phone, Email, Type, Notes",
-          };
-        }
-
-        // Parse prefix: INBOX-NNN or KA-XXXX
-        const prefixMatch = args.match(/^(IN(?:BOX)?-\d+|KA-\d{3,4})\s+(.+)$/i);
-        if (!prefixMatch) {
-          return { text: "❌ Format: `/info INBOX-001 ...` or `/info KA-0001 ...`" };
-        }
-
-        const [, prefix, rest] = prefixMatch;
-
-        // Check if named field format (contains "FieldName:")
-        const isNamed = /[A-Za-z_]+\s*:/.test(rest);
-
-        if (isNamed) {
-          // Parse named fields: Full_Name: Mrs Tan | Phone: 91234567
-          const namedFields: Record<string, string> = {};
-          const parts = rest.split('|').map(s => s.trim());
-          for (const part of parts) {
-            const m = part.match(/^([A-Za-z_]+)\s*:\s*(.+)$/);
-            if (m) namedFields[m[1].trim()] = m[2].trim();
-          }
-          try {
-            const result = await handleInfoCommand({
-              inboxId: prefix, namedFields,
-            });
-            if (result.success) return { text: `✅ ${result.inboxId} — contact updated.` };
-            return { text: `⚠️ ${result.message}` };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            return { text: `❌ Error: ${msg}`, isError: true };
-          }
-        } else {
-          // Positional format: address | postal | phone
-          const m = rest.match(/^(.+?)\s*\|\s*(\d{6})\s*\|\s*([\d\s+\-]+)$/);
-          if (!m) {
-            return {
-              text:
-                "❌ Positional format: `/info INBOX-001 <address> | <6-digit postal> | <phone>`\n" +
-                "Or named: `/info INBOX-001 Full_Name: Mrs Tan | Phone: 91234567`",
-            };
-          }
-          const [, address, postalCode, phone] = m;
-          try {
-            const result = await handleInfoCommand({
-              inboxId: prefix,
-              address: address.trim(),
-              postalCode: postalCode.trim(),
-              phone: phone.trim(),
-            });
-            if (result.success) {
-              return {
-                text:
-                  `✅ ${result.inboxId} — contact details saved.\n` +
-                  `Now run: \`/b ${result.inboxId} GC 3\` to generate booking slots.`,
-              };
-            }
-            return { text: `⚠️ ${result.message}` };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            return { text: `❌ Error: ${msg}`, isError: true };
-          }
-        }
+        return runInfoCommand(ctx.args);
       },
     });
 
@@ -219,50 +487,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return {
-            text:
-              "⚠️ Usage:\n" +
-              "• `/confirm INBOX-001 2` — earliest fit in slot 2\n" +
-              "• `/confirm INBOX-001 2 @ 14:30` — start at 14:30 within slot 2\n" +
-              "• `/confirm INBOX-001 2 @ 15:15-16:15` — hardcoded window",
-          };
-        }
-
-        // Parse: INBOX-001 2 [@ HH:MM] [@ HH:MM-HH:MM]
-        const m = args.match(/^(IN(?:BOX)?-\d+)\s+(\d+)(?:\s*@\s*(\d{1,2}:\d{2})(?:\s*-\s*(\d{1,2}:\d{2}))?)?\s*$/i);
-        if (!m) {
-          return {
-            text:
-              "❌ Format:\n" +
-              "• `/confirm INBOX-001 2`\n" +
-              "• `/confirm INBOX-001 2 @ 14:30`\n" +
-              "• `/confirm INBOX-001 2 @ 15:15-16:15`",
-          };
-        }
-
-        const [, inboxId, choice, startTime, endTime] = m;
-        const placement = startTime ? { start: startTime, end: endTime } : undefined;
-        try {
-          const result = await handleConfirmSlot({
-            inboxId: inboxId.trim(),
-            choice: choice.trim(),
-            placement,
-          });
-          if (result.success) {
-            const changeNote = result.timeChanged ? " (time updated)" : "";
-            return {
-              text:
-                `✅ ${result.inboxId} — slot ${result.option} selected${changeNote}.\n` +
-                `Draft confirmation ready. Reply \`${result.inboxId}\` (or \`/in ${result.inboxId}\`) to send + create job.`,
-            };
-          }
-          return { text: `⚠️ ${result.message ?? result.reason}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ Error: ${msg}`, isError: true };
-        }
+        return runConfirmCommand(ctx.args);
       },
     });
 
@@ -274,34 +499,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return {
-            text:
-              "⚠️ Usage: `/confirmb INBOX-003`\n\n" +
-              "Looks up the calendar event tagged with this inbox id in the **Kool Aircon Bookings** Google Calendar.\n" +
-              "If you created it manually, put the inbox id in the title (e.g. `KA-0003 GC ×2 INBOX-003`) or in the description.\n" +
-              "Then approve with `INBOX-003` to send the confirmation and create the job.",
-          };
-        }
-        const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
-        if (!m) {
-          return { text: "❌ Format: `/confirmb INBOX-003`" };
-        }
-        try {
-          const result = await handleConfirmBooking({ inboxId: m[1].toUpperCase() });
-          if (result.success) {
-            return {
-              text:
-                `✅ ${result.inboxId} — calendar event matched (${result.start} ${result.time}).\n` +
-                `Draft confirmation ready. Reply \`${result.inboxId}\` to send + create job.`,
-            };
-          }
-          return { text: `⚠️ ${result.message ?? result.reason}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ Error: ${msg}`, isError: true };
-        }
+        return runConfirmBCommand(ctx.args);
       },
     });
 
@@ -312,50 +510,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return {
-            text:
-              "⚠️ Usage: `/b INBOX-001 GC 3`\n" +
-              "Postal code is pulled from the saved contact record (set with /info).\n\n" +
-              "Service codes: GC (General Clean), CW (Chemical Wash), CO (Chemical Overhaul), IN (Installation)",
-          };
-        }
-
-        // Format: INBOX-001 GC 3  OR  KA-0004 GC 3
-        const m = args.match(/^(IN(?:BOX)?-\d+|KA-\d{3,4})\s+([A-Z]{2})\s+(\d{1,2})$/i);
-        if (!m) {
-          return {
-            text:
-              "❌ Format: `/b INBOX-001 <service> <units>`\n" +
-              "Example: `/b INBOX-001 GC 3`\n" +
-              "Run `/info INBOX-001 ...` first to save the customer's postal code.",
-          };
-        }
-
-        const [, prefix, serviceType, unitsStr] = m;
-        const prefixUpper = prefix.toUpperCase();
-        const isContactId = prefixUpper.startsWith("KA-");
-
-        try {
-          const result = await handleBookingCommand({
-            inboxId: !isContactId ? prefixUpper : undefined,
-            contactId: isContactId ? prefixUpper : undefined,
-            serviceType: serviceType.toUpperCase(),
-            units: parseInt(unitsStr, 10),
-          });
-          if (result.success) {
-            return {
-              text:
-                `✅ ${result.inboxId} — ${result.slots.length} slot(s) drafted.\n` +
-                `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
-            };
-          }
-          return { text: `⚠️ ${result.message ?? result.reason}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ Error: ${msg}`, isError: true };
-        }
+        return runBCommand(ctx.args);
       },
     });
 
@@ -366,20 +521,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return { text: "⚠️ Usage: `/in INBOX-001` (send draft) or `/in INBOX-001 your text` (override)" };
-        }
-        try {
-          const result = await handleOperatorApproval({ text: args });
-          if (result.success) {
-            return { text: `✅ ${result.inboxId} processed.` };
-          }
-          return { text: `⚠️ ${result.reason ?? "no_match"} — check Telegram for the pending queue.` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ Error: ${msg}`, isError: true };
-        }
+        return runInCommand(ctx.args);
       },
     });
 
@@ -425,47 +567,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return {
-            text:
-              "⚠️ Usage: `/calinfo INBOX-006 GC 3`\n\n" +
-              "Service codes: GC (General Clean), CW (Chemical Wash), " +
-              "CO (Chemical Overhaul), IN (Installation)",
-          };
-        }
-
-        const m = args.match(/^(IN(?:BOX)?-\d+)\s+([A-Z]{2})\s+(\d{1,2})$/i);
-        if (!m) {
-          return {
-            text:
-              "❌ Format: `/calinfo INBOX-006 GC 3`\n" +
-              "Service codes: GC, CW, CO, IN",
-          };
-        }
-
-        const [, inboxId, serviceType, unitsStr] = m;
-        try {
-          const result = await handleCalInfo({
-            inboxId:     inboxId.toUpperCase(),
-            serviceType: serviceType.toUpperCase(),
-            units:       parseInt(unitsStr, 10),
-          });
-          if (result.success) {
-            return {
-              text:
-                `✅ ${result.inboxId} — service set to ${result.serviceType} × ${result.units} units.\n\n` +
-                (result.readyToConfirm
-                  ? `Draft confirmation ready. Reply \`${result.inboxId}\` to send to customer.`
-                  : `Still missing: ${result.stillMissing.join(', ')}.\n` +
-                    `Run /info ${result.inboxId} [address] | [postal] | [phone] to complete.`),
-            };
-          }
-          return { text: `⚠️ ${result.message}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ /calinfo error: ${msg}`, isError: true };
-        }
+        return runCalinfoCommand(ctx.args);
       },
     });
 
@@ -547,28 +649,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return { text: "⚠️ Usage: `/mixyes INBOX-005`\n\nRe-runs the slot search without team filter so any team can take the job." };
-        }
-        const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
-        if (!m) {
-          return { text: "❌ Format: `/mixyes INBOX-005`" };
-        }
-        try {
-          const result = await handleMixYes(m[1].toUpperCase());
-          if (result.success) {
-            return {
-              text:
-                `✅ ${result.inboxId} — ${result.slots.length} slot(s) found across all teams.\n` +
-                `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
-            };
-          }
-          return { text: `⚠️ ${result.message ?? result.reason}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ /mixyes error: ${msg}`, isError: true };
-        }
+        return runMixyesCommand(ctx.args);
       },
     });
 
@@ -579,28 +660,7 @@ export default definePluginEntry({
       acceptsArgs: true,
       requireAuth: true,
       async handler(ctx) {
-        const args = ctx.args?.trim();
-        if (!args) {
-          return { text: "⚠️ Usage: `/mixno INBOX-005`\n\nRe-runs the slot search with the customer's home team only." };
-        }
-        const m = args.match(/^(IN(?:BOX)?-\d+)\s*$/i);
-        if (!m) {
-          return { text: "❌ Format: `/mixno INBOX-005`" };
-        }
-        try {
-          const result = await handleMixNo(m[1].toUpperCase());
-          if (result.success) {
-            return {
-              text:
-                `✅ ${result.inboxId} — ${result.slots.length} slot(s) found (home team).\n` +
-                `Check Telegram for the draft. Reply \`${result.inboxId}\` to send to customer.`,
-            };
-          }
-          return { text: `⚠️ ${result.message ?? result.reason}` };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `❌ /mixno error: ${msg}`, isError: true };
-        }
+        return runMixnoCommand(ctx.args);
       },
     });
 
@@ -1244,6 +1304,166 @@ export default definePluginEntry({
       },
     });
 
+    // ── POST /api/command — Path B: bot commands run from the browser ──────────
+    // Same conversationId-first / contactId-fallback resolution as /api/send.
+    // Dispatches to the same runXCommand functions the Telegram path uses, so
+    // behavior stays identical between the two entry points (see the
+    // "Extracted command bodies" block above).
+    const PATH_B_RUNNERS: Record<string, (argsString: string) => Promise<any>> = {
+      info: runInfoCommand,
+      confirm: runConfirmCommand,
+      confirmb: runConfirmBCommand,
+      b: runBCommand,
+      in: runInCommand,
+      calinfo: runCalinfoCommand,
+      mixyes: runMixyesCommand,
+      mixno: runMixnoCommand,
+      sendphotos: runSendphotosCommand,
+    };
+
+    api.registerHttpRoute({
+      path: '/api/command',
+      auth: 'plugin',
+      match: 'exact',
+      handler: async (req: any, res: any) => {
+        if (!requireUIAuth(req, res)) return true;
+        if (req.method !== 'POST') {
+          sendUIJson(res, 405, { error: 'Method not allowed' });
+          return true;
+        }
+        let rawBody = '';
+        await new Promise<void>((resolve, reject) => {
+          req.on('data', (chunk: any) => { rawBody += chunk.toString(); });
+          req.on('end', () => resolve());
+          req.on('error', reject);
+        });
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          sendUIJson(res, 400, { error: 'Body must be valid JSON' });
+          return true;
+        }
+
+        const text = String(parsed?.text || '').trim();
+        if (!text) {
+          sendUIJson(res, 400, { error: 'text is required' });
+          return true;
+        }
+
+        try {
+          let conversationId = String(parsed?.conversationId || '');
+          const contactId = String(parsed?.contactId || '');
+          const contacts = await getContacts();
+          let contact = conversationId
+            ? contacts.find((c: any) => c.Channel_Contact_ID === conversationId)
+            : null;
+          if (!contact && contactId) {
+            contact = contacts.find((c: any) => c.Contact_ID === contactId);
+            conversationId = contact?.Channel_Contact_ID || conversationId;
+          }
+          if (!conversationId) {
+            sendUIJson(res, 400, { error: 'conversationId or contactId is required' });
+            return true;
+          }
+
+          const channel = (contact?.Source || '').includes('WhatsApp') ? 'whatsapp' : 'telegram';
+
+          // Bare "INBOX-005 [text]" already carries its own id, exactly like
+          // typing it straight into Telegram — pass it through untouched.
+          const isBareApproval = !text.startsWith('/') && /^(?:IN(?:BOX)?-\d+)/i.test(text);
+
+          let commandName: string;
+          let restArgs: string;
+          if (isBareApproval) {
+            commandName = 'in';
+            restArgs = text;
+          } else {
+            const m = text.match(/^\/?(\w+)\s*([\s\S]*)$/);
+            if (!m) {
+              sendUIJson(res, 400, { error: `Unknown command: ${text}` });
+              return true;
+            }
+            commandName = m[1].toLowerCase();
+            restArgs = m[2].trim();
+          }
+
+          const runner = PATH_B_RUNNERS[commandName];
+          if (!runner) {
+            sendUIJson(res, 400, { error: `Unknown command: /${commandName}` });
+            return true;
+          }
+
+          // The browser has no INBOX ids of its own (see Phase 6 plan finding
+          // #1) — resolve the open inbox for this contact and prepend it,
+          // falling back to the raw Contact_ID exactly like /info and /b
+          // already do for a from-scratch conversation. Bare approvals skip
+          // this since the id is already embedded in the text.
+          let argsString = restArgs;
+          if (!isBareApproval && contact?.Contact_ID) {
+            const openInbox = await findOpenInboxForContact(contact.Contact_ID);
+            const resolvedId = openInbox?.inboxId || contact.Contact_ID;
+            argsString = restArgs ? `${resolvedId} ${restArgs}` : resolvedId;
+          }
+
+          // Log the operator's own command text as sent, before dispatching —
+          // distinct from the command's result, logged separately below.
+          const cmdMessage = {
+            conversation_id: conversationId,
+            channel,
+            direction: 'outbound',
+            message_type: 'bot-cmd',
+            text,
+            timestamp: Date.now(),
+            sender: 'operator',
+          };
+          try {
+            await db.insert(cmdMessage);
+          } catch (e) {
+            api.logger.error('[ui] /api/command db log (cmd) failed:', e instanceof Error ? e.message : String(e));
+          }
+          broadcastToUI({ type: 'message', message: cmdMessage });
+
+          const result = await runner(argsString);
+
+          // registerUICommand's persistCommandResult only fires when a result
+          // carries contactId/inboxId — none of the extracted runXCommand
+          // functions return those, so it's a silent no-op for every command
+          // reachable from here (true on the Telegram path too, pre-existing
+          // behavior, not something this route can rely on). Log the result
+          // directly instead, using the contact already resolved above.
+          let respMessage: any = null;
+          if (result && typeof result.text === 'string') {
+            respMessage = {
+              conversation_id: conversationId,
+              channel,
+              direction: 'outbound',
+              message_type: 'bot-resp',
+              text: result.text,
+              timestamp: Date.now(),
+              sender: 'operator',
+            };
+            try {
+              await db.insert(respMessage);
+            } catch (e) {
+              api.logger.error('[ui] /api/command db log (resp) failed:', e instanceof Error ? e.message : String(e));
+            }
+            broadcastToUI({ type: 'message', message: respMessage });
+          }
+
+          // Mirror /api/send's "now" convention: the client advances its poll
+          // bookmark to this value so /api/updates doesn't re-deliver the same
+          // two messages a second time on its next tick.
+          sendUIJson(res, 200, { ok: true, now: Date.now(), cmdMessage, respMessage });
+        } catch (err) {
+          api.logger.error('[ui] /api/command error:', err instanceof Error ? err.message : String(err));
+          sendUIJson(res, 502, { error: 'Failed to run command.' });
+        }
+        return true;
+      },
+    });
+
     // Pull manually-created or bot-confirmed events from Google Calendar and
     // create Job rows in 2_Jobs for any that don't already have one.
     const SYNC_INTERVAL_MS = 15 * 60 * 1000;
@@ -1343,18 +1563,8 @@ export default definePluginEntry({
       description: 'Send the photo bundle for a completed job to the customer. Usage: /sendphotos INBOX-001',
       acceptsArgs: true,
       requireAuth: false,
-      handler: async ({ args, reply }) => {
-        const inboxId = (args || '').trim();
-        if (!inboxId) {
-          await reply('⚠️ Usage: /sendphotos INBOX-001');
-          return;
-        }
-        const force = inboxId.toLowerCase().endsWith(' force');
-        const cleanId = inboxId.replace(/\s+force$/i, '').trim();
-        const result = await handleSendPhotosCommand(cleanId, force);
-        if (!result.success && result.message) {
-          await reply(result.message);
-        }
+      async handler(ctx) {
+        return runSendphotosCommand(ctx.args);
       },
     });
 

@@ -285,7 +285,7 @@
  if (!scroll) return;
  var dir = m.direction || "inbound";
  var mtype = m.message_type || "direct";
- var bubbleCls = dir === "inbound" ? "inbound" : (mtype === "bot-command" ? "bot-command" : mtype === "bot-response" ? "bot-response" : "outbound-direct");
+ var bubbleCls = dir === "inbound" ? "inbound" : (mtype === "bot-cmd" ? "bot-command" : mtype === "bot-resp" ? "bot-response" : "outbound-direct");
  var row = el("div", "bubble-row " + dir);
  var bubble = el("div", "bubble " + bubbleCls, m.text || "");
  var meta = el("div", "bubble-meta", fmtTime(m.timestamp));
@@ -342,12 +342,28 @@
  composeSend.disabled = busy;
  }
 
+ function isPathBText(text) {
+ return text.charAt(0) === "/" || /^(?:IN(?:BOX)?-\d+)/i.test(text);
+ }
+
+ function renderIncomingMessage(m) {
+ if (!m) return;
+ if (m.conversation_id === state.activeConversationId) {
+ appendMessage(m);
+ var scroll = document.getElementById("message-scroll");
+ if (scroll) scroll.scrollTop = scroll.scrollHeight;
+ }
+ updateThreadPreview(m);
+ }
+
  function sendCompose() {
  var text = composeInput.value.trim();
  if (!text || !state.activeConversationId) return;
  composeError.style.display = "none";
  setComposeBusy(true);
- fetch("/api/send", {
+ var isCommand = isPathBText(text);
+ var endpoint = isCommand ? "/api/command" : "/api/send";
+ fetch(endpoint, {
  method: "POST",
  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
  body: JSON.stringify({ conversationId: state.activeConversationId, text: text }),
@@ -359,18 +375,18 @@
  }).then(function (data) {
  composeInput.value = "";
  composeInput.style.height = "auto";
- if (data.message.conversation_id === state.activeConversationId) {
- appendMessage(data.message);
- var scroll = document.getElementById("message-scroll");
- if (scroll) scroll.scrollTop = scroll.scrollHeight;
+ if (isCommand) {
+ renderIncomingMessage(data.cmdMessage);
+ renderIncomingMessage(data.respMessage);
+ } else {
+ renderIncomingMessage(data.message);
  }
- updateThreadPreview(data.message);
  state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); });
  renderThreadList();
  state.lastUpdateSince = Math.max(state.lastUpdateSince, data.now);
  }).catch(function (err) {
  console.error("[ui] send failed:", err);
- composeError.textContent = "Failed to send — try again.";
+ composeError.textContent = isCommand ? "Command failed — try again." : "Failed to send — try again.";
  composeError.style.display = "block";
  }).finally(function () {
  setComposeBusy(false);
