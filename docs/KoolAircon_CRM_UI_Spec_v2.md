@@ -2,8 +2,10 @@
   
 **Version:** 2.0   
 **Date:** July 2026   
-**Status:** Ready for build   
+**Status:** SUPERSEDED — historical planning document, kept for design-decision context only.   
 **Prepared for:** Developer / Builder AI  
+  
+> **This spec is no longer current.** The browser CRM interface it describes was fully built across ten phases and is live at `/ui`. For the accurate, as-built description — routes, schema, file layout, and where the implementation ended up diverging from this plan (WebSocket → long-polling, extra routes, the Reminder Queue panel, etc.) — see `KoolAircon_CRM_Documentation_v4.md`, Part 1.6 and Part 3.10. Do not use this file as a source of truth for what's currently live; treat it only as a record of the original design intent and the reasoning behind early decisions.  
   
 ---  
   
