@@ -748,6 +748,67 @@ export async function updateQueueDraftText(queueId, newText) {
   await updateRow(SHEETS.QUEUE, found.rowNum, colValues);
 }
 
+// ─── Contact Totals Recompute ──────────────────────────────────────────────
+// Replaces what used to be a spreadsheet-native formula in 1_Contacts'
+// Total_Jobs / Total_Spend_SGD columns. That formula, dragged down thousands
+// of rows, was why appendRow's "first empty row in column A" scan kept
+// landing 1000+ rows past the real data -- a dragged formula leaves column A
+// itself untouched, but the row still isn't picked up as truly last-used by
+// some editors, and more importantly it made the sheet balloon in size.
+// Recomputed here instead and run on the same 15-min runSync timer as
+// everything else in index.ts, so 1_Contacts stays a plain data sheet.
+export async function recomputeContactTotals() {
+  const [contacts, jobs, headers] = await Promise.all([
+    getContacts(),
+    getJobs(),
+    getSheetHeaders(SHEETS.CONTACTS),
+  ]);
+
+  const totalsByContact = new Map(); // Contact_ID -> { count, spend }
+  for (const j of jobs) {
+    if (!j.Contact_ID) continue;
+    const entry = totalsByContact.get(j.Contact_ID) || { count: 0, spend: 0 };
+    entry.count += 1;
+    entry.spend += parsePrice(j.Amount_SGD) ?? 0;
+    totalsByContact.set(j.Contact_ID, entry);
+  }
+
+  const cfg = SHEET_CONFIG[SHEETS.CONTACTS];
+  const dataStart = cfg.headerIdx + 1 + (cfg.skipAfterHeader || 0) + 1;
+  const jobsCol = colLetterFromHeader(headers, 'Total_Jobs');
+  const spendCol = colLetterFromHeader(headers, 'Total_Spend_SGD');
+
+  const requests = [];
+  contacts.forEach((c, idx) => {
+    if (!c.Contact_ID) return;
+    const totals = totalsByContact.get(c.Contact_ID) || { count: 0, spend: 0 };
+    const newJobs = String(totals.count);
+    const newSpend = String(totals.spend);
+    const sheetRow = dataStart + idx;
+    if (c.Total_Jobs !== newJobs) {
+      requests.push({ range: `${SHEETS.CONTACTS}!${jobsCol}${sheetRow}`, values: [[newJobs]] });
+    }
+    if (c.Total_Spend_SGD !== newSpend) {
+      requests.push({ range: `${SHEETS.CONTACTS}!${spendCol}${sheetRow}`, values: [[newSpend]] });
+    }
+  });
+
+  if (requests.length === 0) {
+    console.log('[sheets] recomputeContactTotals: nothing changed');
+    return { updated: 0 };
+  }
+
+  const sheets = await getSheets();
+  await queueWrite(() => sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { valueInputOption: 'RAW', data: requests },
+  }));
+  _contactCache = null;
+  _contactCacheAt = 0;
+  console.log(`[sheets] recomputeContactTotals: updated ${requests.length} cell(s)`);
+  return { updated: requests.length };
+}
+
 async function nextJobId() {
  const jobs = await getJobs();
  const today = getSGTDate().replace(/-/g, '');

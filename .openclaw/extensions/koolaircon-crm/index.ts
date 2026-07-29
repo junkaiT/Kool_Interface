@@ -24,7 +24,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { WHATSAPP_VERIFY_TOKEN, WHATSAPP_OPERATOR_NUMBER, sendWhatsApp } from "../../../crm/whatsapp.js";
-import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact, updateContact, getQueue, updateQueueDraftText } from "../../../crm/sheets.js";
+import { getSettings, purgeOperatorInbox, getContacts, findInboxById, getJobs, findOpenInboxForContact, updateContact, getQueue, updateQueueDraftText, recomputeContactTotals } from "../../../crm/sheets.js";
 import * as db from "../../../crm/db.js";
 import { listEvents, parseDescription } from "../../../crm/calendar.js";
 import { getTeamCalendars } from "../../../crm/scheduler.js";
@@ -1932,6 +1932,20 @@ export default definePluginEntry({
         } catch (err) {
           api.logger.error(
             `[CRM] Technician poll error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+
+        // ── Block 5: Contact totals recompute ───────────────────────────────────
+        // Replaces the old spreadsheet-native Total_Jobs/Total_Spend_SGD formula
+        // in 1_Contacts (see recomputeContactTotals in sheets.js for why).
+        try {
+          const totalsResult = await recomputeContactTotals();
+          if (totalsResult.updated > 0) {
+            api.logger.info(`[CRM] Contact totals recompute: ${totalsResult.updated} cell(s) updated`);
+          }
+        } catch (err) {
+          api.logger.error(
+            `[CRM] Contact totals recompute error: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
 
