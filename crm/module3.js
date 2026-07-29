@@ -31,7 +31,7 @@ import {
 import { sendTelegram, OPERATOR_TELEGRAM_ID } from './bot.js';
 import { sendWhatsApp } from './whatsapp.js';
 
-// ─── Step grammar helpers ─────────────────────────────────────────────────────
+// ─── Step grammar helpers ────────────────────────────────────────────────────
 
 function parseStep(stepStr) {
  if (!stepStr || !stepStr.trim()) return null;
@@ -57,7 +57,7 @@ function dateDiffDays(dateStrA, dateStrB) {
  return Math.round((msB - msA) / (24 * 60 * 60 * 1000));
 }
 
-// ─── cleanQueueStaleAndExpired ────────────────────────────────────────────────
+// ─── cleanQueueStaleAndExpired ─────────────────────────────────────────────────
 
 export async function cleanQueueStaleAndExpired(
  todaySGT,
@@ -110,12 +110,11 @@ export async function cleanQueueStaleAndExpired(
  staleCount++;
  }
  } else if (tplInfo.anchor === 'L') {
- // L-anchor eligibility is "hoursSinceCreated >= offsetHours" (see runDailyReminderSweep),
- // not an exact match — once true it stays true, so elapsed-time alone never makes a
- // queued L-anchor entry stale. The only real staleness signal left is a completed job.
+ const createdDate = (contact.Created_Date || '').slice(0, 10);
+ const daysSinceCreated = createdDate ? dateDiffDays(createdDate, todaySGT) : -1;
  const hasCompletedJob = contactsWithCompletedJob.has(contact.Contact_ID);
- if (hasCompletedJob) {
- reason = `stale (L-anchor: hasCompletedJob=${hasCompletedJob})`;
+ if (daysSinceCreated !== tplInfo.offsetDays || hasCompletedJob) {
+ reason = `stale (L-anchor: daysSinceCreated=${daysSinceCreated}, expected=${tplInfo.offsetDays}, hasCompletedJob=${hasCompletedJob})`;
  staleCount++;
  }
  }
@@ -316,6 +315,7 @@ export async function runDailyReminderSweep() {
  Contact_ID: contact.Contact_ID || '',
  Last_Job_Date: lastJobDateOnly,
  Phone: contact.Phone || '',
+ customer_phone: contact.Phone || '',
  Address: contact.Address || '',
  Email: contact.Email || '',
  });
@@ -377,6 +377,7 @@ export async function runDailyReminderSweep() {
  Name: contact.Full_Name || 'Customer',
  Contact_ID: contact.Contact_ID || '',
  Phone: contact.Phone || '',
+ customer_phone: contact.Phone || '',
  Address: contact.Address || '',
  });
 

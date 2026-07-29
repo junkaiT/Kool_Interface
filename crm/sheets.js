@@ -394,9 +394,20 @@ export async function getTemplate(templateId) {
 export function fillTemplate(text, vars = {}) {
   if (!text) return '';
   let result = text;
+  // {{key}} is matched case-insensitively -- template text uses lowercase
+  // placeholders like {{name}} while vars objects pass PascalCase keys like
+  // Name, so a literal-string replace (the old behavior) never matched and
+  // left the placeholder text showing verbatim in sent messages.
+  const lowerVars = {};
   for (const [key, value] of Object.entries(vars)) {
-    // Support both {{key}} (Meta format) and [Key] (legacy) for backward compatibility
-    result = result.replaceAll(`{{${key}}}`, value ?? '');
+    lowerVars[key.toLowerCase()] = value;
+  }
+  result = result.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key) => {
+    const lower = key.toLowerCase();
+    return Object.prototype.hasOwnProperty.call(lowerVars, lower) ? (lowerVars[lower] ?? '') : match;
+  });
+  // [Key] (legacy) stays a case-sensitive literal replace, unchanged.
+  for (const [key, value] of Object.entries(vars)) {
     result = result.replaceAll(`[${key}]`, value ?? '');
   }
   return result;
