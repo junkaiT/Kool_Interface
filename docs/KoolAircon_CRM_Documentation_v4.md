@@ -287,14 +287,14 @@ Note: do not share these publicly. Store in a password manager.
 | BOT_TOKEN | In process.env.BOT_TOKEN (supervisord) |
 | WHATSAPP_ACCESS_TOKEN | In process.env.WHATSAPP_ACCESS_TOKEN (supervisord) |
 | UI_PASSWORD | **New in v4.** In process.env.UI_PASSWORD (supervisord) — HTTP Basic Auth password for `/ui` and every `/api/*` route. If unset, those routes return 500 rather than silently allowing access. **Not scoped per-user** — anyone given this password has full read/write access to real customer data and can send messages as the business; there is no read-only or sandboxed mode. |
-
-**Credential rotation reminder (29 July 2026):** `WHATSAPP_ACCESS_TOKEN`, `BOT_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `UI_PASSWORD` were all pasted in plaintext into an AI chat session this same day (while sharing the supervisord config for debugging). Treat all four as exposed and rotate them — update the values, update the `environment=` line in `/tmp/supervisord-openclaw.conf`, restart the gateway — especially before giving `UI_PASSWORD` to anyone new.
 | OpenClaw Host | OVH container via MyClaw — no direct SSH |
 | Gateway restart | supervisorctl -c /tmp/supervisord-openclaw.conf restart openclaw-gateway |
 | ngrok URL (current) | https://flatly-aviator-turf.ngrok-free.dev (changes on restart) — also serves `/ui` |
 | Vercel project | kool-pi.vercel.app — NEXT_PUBLIC_OPENCLAW_URL env var must match ngrok URL |
 | Technician app | https://junkait.github.io/KoolAir- (GitHub Pages) |
 | KoolAircon Jobs Drive folder | 1hxwi9RQGg9myRe-u9Rg6UdViHQ2wZDJJ |
+
+**Credential rotation reminder (29 July 2026):** `WHATSAPP_ACCESS_TOKEN`, `BOT_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `UI_PASSWORD` were all pasted in plaintext into an AI chat session this same day (while sharing the supervisord config for debugging). Treat all four as exposed and rotate them — update the values, update the `environment=` line in `/tmp/supervisord-openclaw.conf`, restart the gateway — especially before giving `UI_PASSWORD` to anyone new.
 
 3.3 Key Architecture Facts
 
