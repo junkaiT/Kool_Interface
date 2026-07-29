@@ -185,13 +185,50 @@
  #help-modal-content code { background: var(--bg-hover); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
  #help-close-btn { position: absolute; top: 14px; right: 16px; background: none; border: none; font-size: 20px; line-height: 1; cursor: pointer; color: var(--text-dim); padding: 0; }
  #help-close-btn:hover { color: var(--text); }
+
+ #thread-header-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+ #thread-header h1 { margin: 0; }
+ #thread-help-btn { display: none; }
+ #chat-back-btn { display: none; }
+ #cal-close-btn, #queue-close-btn { display: none; }
+ #queue-header { display: flex; align-items: center; justify-content: space-between; }
+
+ /* ── Mobile layout ── */
+ @media (max-width: 768px) {
+ #thread-help-btn { display: flex; }
+ #app { overflow: hidden; }
+ #thread-col { width: 100%; flex: 1 1 auto; border-right: none; }
+ #chat-col { display: none; }
+ body.chat-active #thread-col { display: none; }
+ body.chat-active #chat-col { display: flex; width: 100%; flex: 1 1 auto; }
+ #chat-back-btn { display: flex; }
+ #chat-header { padding: 8px 10px; gap: 8px; }
+ #chat-header-name, #chat-header-sub, #chat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .icon-btn { width: 34px; height: 34px; font-size: 15px; }
+ #customer-panel.open { flex-direction: column; gap: 12px; }
+ .bubble { max-width: 84%; }
+ #cal-col, #queue-col {
+ position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+ width: 100%; flex: none; z-index: 500;
+ }
+ #cal-close-btn, #queue-close-btn { display: flex; }
+ #booking-panel .row { flex-direction: column; align-items: stretch; gap: 3px; }
+ #booking-panel .row label { width: auto; }
+ #thread-search, #compose-input, #booking-panel select, #booking-panel input,
+ .queue-item textarea, #customer-panel .cust-field input {
+ font-size: 16px;
+ }
+ }
 </style>
 </head>
 <body>
 <div id="app">
  <div id="thread-col">
  <div id="thread-header">
+ <div id="thread-header-top">
  <h1>KoolAircon CRM</h1>
+ <button class="icon-btn" id="thread-help-btn" title="Instructions">❓</button>
+ </div>
  <input id="thread-search" type="search" placeholder="Search conversations…">
  </div>
  <div id="thread-list"></div>
@@ -200,6 +237,7 @@
 
  <div id="chat-col">
  <div id="chat-header">
+ <button class="icon-btn" id="chat-back-btn" title="Back to conversations">←</button>
  <div class="avatar channel-telegram" id="chat-avatar">–</div>
  <div id="chat-header-info">
  <div id="chat-header-name"><span id="chat-name">Select a conversation</span></div>
@@ -230,6 +268,7 @@
  <button class="icon-btn" id="cal-prev">‹</button>
  <span id="cal-month-label"></span>
  <button class="icon-btn" id="cal-next">›</button>
+ <button class="icon-btn" id="cal-close-btn" title="Close">✕</button>
  </div>
  <div id="cal-grid"></div>
  <div id="cal-jobs">
@@ -263,7 +302,10 @@
  </div>
 
  <div id="queue-col" class="collapsed">
- <div id="queue-header">Reminder Queue</div>
+ <div id="queue-header">
+ <span>Reminder Queue</span>
+ <button class="icon-btn" id="queue-close-btn" title="Close">✕</button>
+ </div>
  <div id="queue-list">
  <div id="queue-empty">Loading…</div>
  </div>
@@ -405,6 +447,7 @@
  function openThread(thread) {
  state.activeConversationId = thread.conversationId;
  state.activeContactId = thread.contactId || null;
+ document.body.classList.add("chat-active");
  resetBookingPanel();
  renderThreadList();
  var avatar = document.getElementById("chat-avatar");
@@ -706,7 +749,22 @@
  });
  document.getElementById("thread-search").addEventListener("input", renderThreadList);
 
+ document.getElementById("chat-back-btn").addEventListener("click", function () {
+ document.body.classList.remove("chat-active");
+ });
+ document.getElementById("cal-close-btn").addEventListener("click", function () {
+ document.getElementById("cal-col").classList.add("collapsed");
+ document.getElementById("toggle-cal-panel").classList.remove("toggled");
+ });
+ document.getElementById("queue-close-btn").addEventListener("click", function () {
+ document.getElementById("queue-col").classList.add("collapsed");
+ document.getElementById("toggle-queue-panel").classList.remove("toggled");
+ });
+
  document.getElementById("toggle-help").addEventListener("click", function () {
+ document.getElementById("help-modal").classList.add("open");
+ });
+ document.getElementById("thread-help-btn").addEventListener("click", function () {
  document.getElementById("help-modal").classList.add("open");
  });
  document.getElementById("help-close-btn").addEventListener("click", function () {
@@ -1119,6 +1177,10 @@
  });
  if (threadsNeedReload) { loadThreads(); } else { state.threads.sort(function (a, b) { return (b.lastTimestamp || 0) - (a.lastTimestamp || 0); }); renderThreadList(); }
  }).catch(function (err) { console.error("[ui] poll failed:", err); }).finally(function () { setTimeout(poll, 3000); });
+ }
+
+ if (window.matchMedia("(max-width: 768px)").matches) {
+ document.getElementById("cal-col").classList.add("collapsed");
  }
 
  state.lastUpdateSince = Date.now();
