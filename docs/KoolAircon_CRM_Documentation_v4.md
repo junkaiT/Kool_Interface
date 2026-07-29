@@ -6,6 +6,8 @@ Version 4.0 | July 2026 | KoolAircon Pte Ltd
 
 This document replaces v3 (17 July 2026). Major addition: the browser CRM interface (`/ui`) — a WhatsApp-Web-style operator dashboard built across ten phases on top of the existing Telegram-bot backend, adding thread list, chat panel, customer-info editing, calendar/booking panel, and a Reminder Queue approval UI for Module 3 drafts. Telegram remains fully functional as a fallback at all times; nothing about the existing bot command logic changed except the extraction described in Part 3.10.
 
+**Revision note (29 July 2026):** four follow-up phases landed on top of the v4 base and are folded into this same document rather than issued as a new version, since none of them change the architecture described above — they're fixes and one feature built on it. Summary: (1) `Total_Jobs`/`Total_Spend_SGD` in `1_Contacts` switched from a spreadsheet formula to a code-computed batch update (was silently inflating the sheet to 1000+ rows — see 2.3, 3.10.7); (2) the WhatsApp webhook now logs Meta's delivery-status callbacks instead of discarding them (3.10.8); (3) a real production incident — approved-looking Module3 reminder sends that never reached the customer's phone — was root-caused to sending Marketing-tier content as free text outside the 24-hour customer service window, **not yet fixed** (see 3.5, 3.7); along the way, a template-placeholder case-sensitivity bug (`{{name}}` never matching a `Name` vars key) was found and fixed (3.10.9); (4) a mobile-responsive layout was added to `ui.html` (3.10.10). See the revision note in each cross-referenced section for detail.
+
 Four parts: Part 1 — Operator quick reference (Telegram + Browser). Part 2 — How the system works. Part 3 — Technical annex for rebuilding. Part 3.10 — Browser CRM UI technical reference (new in v4).
 
 Part 1 — Operator Quick Reference
@@ -163,6 +165,8 @@ Sheet ID: 1YSU2zdeijOyp4KZYxav6ASoLLNst6IrPZ5Vo2lB05p4
 
 **Note on `Module3_Queue.Contact_ID`**: this column holds the internal `KA-XXXX` contact id, not a phone/Telegram id. Anything that sends to a queue entry must resolve the real `Channel_Contact_ID` via `1_Contacts` first — see 3.10.4 for the bug this caused and its fix.
 
+**`Total_Jobs` / `Total_Spend_SGD` (29 July 2026 revision) are code-computed, not a spreadsheet formula.** They used to be a dragged-down formula, which silently caused `1_Contacts` to balloon to 1000+ rows (the formula's presence in a cell fooled the "first empty row" append logic used elsewhere) and had to be manually cleared. They're now recomputed every 15 minutes by `recomputeContactTotals()` (3.10.7). **Do not re-add a formula to these columns** — it will immediately start fighting with the code's writes and can reintroduce the same row-bloat.
+
 2.4 Message Template System
 
 All message templates use {{double_curly_braces}} for parameters (Meta WhatsApp Business API format). Three message types:
@@ -193,23 +197,29 @@ Template IDs and their triggers:
 | REM-4-A | kool_reminder_210 | C+210D, MD personal outreach, 12% off | Marketing |
 | REM-5-A | kool_reminder_365 | C+365D, 15% off returning customer | Marketing |
 
+**Delivery gap found 29 July 2026, not yet fixed:** every template marked "Marketing" above (`LEAD-F1-A`, `LEAD-F2-A`, `POST-REVIEW-A`, `POST-REFERRAL-A`, `REM-1-A` through `REM-5-A`) is sent by `module3.js` via `sendWhatsApp()` — a free-text/service-tier send — not via `sendWhatsAppTemplate()`. Free-text messages can only reach a customer within an open 24-hour customer service window (the FEP mentioned in 1.3). Meta's Cloud API will still return a `200` and a real `wamid` for a send outside that window — it does not reject at the API layer — so the send *looks* successful in `5_Message_Log` and the server console while silently never reaching the customer. This is exactly what happened in a live incident on 2026-07-29 (diagnosed via the new webhook status logging, 3.10.8) and will recur for any Marketing-tier reminder sent to a customer who hasn't messaged in the last 24 hours, which is the normal case for a proactive reminder. **Real fix, not yet done:** get these templates approved by Meta (blocked on the rejected display name, see 3.5) and switch these send calls to `sendWhatsAppTemplate()`, which works regardless of window state.
+
 2.5 Module 3 — Automation Engine
 
-Runs on a 15-minute timer via runSync in index.ts. Four independent blocks:
+Runs on a 15-minute timer via runSync in index.ts. Five independent blocks — **note the block numbers below match the code's own comments, but the code does not execute them in numeric order**; the actual source order is Block 1, 2, 4, 5, 3 (see 3.4 for the exact sequence):
 
 Block 1: syncCalendarToJobs — pulls manual calendar events, creates Job rows
 
 Block 2: detectAndMarkCompletedJobs — stamps Completed_At, updates Last_Job_Date, queues POST-D0-A draft
 
-Block 3: pollTechnicianSubmissions — scans Drive for new _SUBMIT_ files, routes fields to 2_Jobs/1_Contacts via 1_App_Config schema
+Block 3: runDailyReminderSweep — runs once/day at Sweep_Hour_SGT, generates reminder drafts into Module3_Queue (executes last in the actual file, despite the number)
 
-Block 4: runDailyReminderSweep — runs once/day at Sweep_Hour_SGT, generates reminder drafts into Module3_Queue
+Block 4: pollTechnicianSubmissions — scans Drive for new _SUBMIT_ files, routes fields to 2_Jobs/1_Contacts via 1_App_Config schema
+
+Block 5 (new, 29 July 2026): recomputeContactTotals — recomputes `Total_Jobs`/`Total_Spend_SGD` for every contact from `2_Jobs`, batch-writing only changed cells (see 3.10.7)
 
 Team_Schedule cache: 60-minute TTL. Changes to Team_Schedule take effect within 60 minutes — no restart needed.
 
 Module3_AutoSend=FALSE: all drafts require operator approval — either replying `Q-NNN` in Telegram, or reviewing/editing/approving in the browser's Reminder Queue panel (see 1.6, 3.10).
 
 Sweep gate is in-memory only (`sweepRanToday` in index.ts), not persisted to Sheets — it resets on every gateway restart. If a restart happens during the `Sweep_Hour_SGT` hour, the sweep can fire a second time that day on the next 15-minute tick. Check `Module3_Queue` for duplicate rows generated the same day if a restart happened during that window.
+
+**Separate, confirmed-live duplicate-queue risk (29 July 2026):** the sweep's only duplicate-prevention is "is this Contact_ID + Template_ID pair already sitting in `Module3_Queue` right now" — it does **not** check `5_Message_Log`/send history. L-anchor templates (`LEAD-F1-A`, `LEAD-F2-A`) use a `>=` threshold (once eligible, always eligible — see 3.1's module3.js row), so if `Module3_Last_Run_Date` in `9_Settings` is ever manually cleared and the sweep re-run (e.g. for testing), it will re-queue an L-anchor draft for **every** contact who's already past that template's threshold and doesn't currently have one queued — including contacts who received and already had that draft approved days or weeks earlier. Confirmed live: a manual retest on 2026-07-29 unexpectedly re-queued `LEAD-F1-A` for 11 real contacts (KA-0003, KA-0010, KA-0012–0020) who almost certainly already received it. **Not yet fixed** — the correct fix is to also check `hasReceivedTemplate(contactId, templateId)` (already exists in `sheets.js`, reads `5_Message_Log`) before queueing an L-anchor draft, not just the current queue state. Until fixed: never manually clear `Module3_Last_Run_Date` without immediately reviewing every newly-queued item in the Reminder Queue panel before approving anything.
 
 2.6 Booking Page (kool-pi.vercel.app/book)
 
@@ -242,20 +252,20 @@ CRM workspace: ~/.openclaw/workspace/crm/
 | bot.js | 261 | Barrel file + core hub. Config constants (OPERATOR_TELEGRAM_ID, BOT_TOKEN, BLOCK_SIZE_MINS), sendTelegram() (now takes an optional `messageType` param), pendingApprovals map, getStagedSlots(), syncCalendarToJobs(). Re-exports all handlers from domain files, including handleQueueDiscard (new in v4). |
 | crm.js | 1034 | Customer-facing handlers: handleInboundMessage, handleInfoCommand, handleOperatorApproval, handleQueueApproval (fixed in v4 — see 3.10.4), handleQueueDiscard (new in v4), isQueueApprovalText. Web booking message parser. YES reply detection (isPhotoYesReply, isProbablePhotoYesReply). handleSendPhotosCommand. |
 | booking.js | 1067 | Slot finding and confirmation: handleBookingCommand (/b), handleConfirmSlot, handleConfirmBooking, handleMixYes, handleMixNo, handleCheckCal, handleCalInfo, normalizeInboxId. Both handleBookingCommand and handleConfirmSlot accept an optional `{ notifyFn, silent }` — the browser's booking panel (3.10) passes a no-op notifyFn so slot search/confirm don't also ping Telegram. |
-| module3.js | 616 | Automation engine: runDailyReminderSweep, detectAndMarkCompletedJobs, pollTechnicianSubmissions (schema-driven via 1_App_Config). **Known gap** — its own auto-send branch (not the browser/Telegram approval path) still passes `entry.Contact_ID` straight to sendWhatsApp/sendTelegram, the same bug fixed in handleQueueApproval (3.10.4) — only relevant if Module3_AutoSend is ever set TRUE, and not yet fixed. |
+| module3.js | 618 | Automation engine: runDailyReminderSweep, detectAndMarkCompletedJobs, pollTechnicianSubmissions (schema-driven via 1_App_Config). **Known gap** — its own auto-send branch (not the browser/Telegram approval path) still passes `entry.Contact_ID` straight to sendWhatsApp/sendTelegram, the same bug fixed in handleQueueApproval (3.10.4) — only relevant if Module3_AutoSend is ever set TRUE, and not yet fixed. **29 July 2026:** both draft-generation loops (C-anchor and L-anchor) now also pass a `customer_phone` var to `fillTemplate()` (aliasing `Phone`) since at least one live template references `{{customer_phone}}`, which was never populated before (3.10.9). `cleanQueueStaleAndExpired`'s L-anchor branch also independently gained a `daysSinceCreated`-based staleness check on the live server before this doc's last update — reconciled into this file, not a new change. |
 | reports.js | 320 | Photo bundle delivery: assemblePhotoBundleSequence, sendPhotoBundleToCustomer, compilePostD0B. Fetches photos from Drive, uploads to Meta, sends in sequence. |
 | templates.js | 302 | Meta WhatsApp template registry. getTemplateComponents() for registration, getSendComponents() for sending. All 10 registered templates defined here with buttons and params. |
 | scheduler.js | 608 | Slot-finding engine. findAvailableSlots(), getZoneFromPostal(), getDurationMins(). _zoneDayCache has 60-min TTL. |
-| sheets.js | 992 | All Google Sheets reads/writes. Dynamic column lookup — reads headers at runtime. getAppConfig() reads 1_App_Config from tech workbook. appendSubmission(), updateSubmissionStatus() for tech app audit log. Module3_Queue helpers: getQueue, addToQueue, findQueueById, removeFromQueue, updateQueueDraftText (new in v4). |
+| sheets.js | 1065 | All Google Sheets reads/writes. Dynamic column lookup — reads headers at runtime. getAppConfig() reads 1_App_Config from tech workbook. appendSubmission(), updateSubmissionStatus() for tech app audit log. Module3_Queue helpers: getQueue, addToQueue, findQueueById, removeFromQueue, updateQueueDraftText (new in v4). **29 July 2026:** `fillTemplate()` now matches `{{key}}` case-insensitively (3.10.9); new `recomputeContactTotals()` replaces the old spreadsheet formula (3.10.7). |
 | calendar.js | 238 | All Google Calendar reads/writes. buildDescription/parseDescription for structured event metadata — the browser's calendar job-card expansion (3.10) reuses parseDescription directly. |
 | whatsapp.js | 392 | sendWhatsApp() (now takes an optional `messageType` param, default `'bot-resp'`), uploadWhatsAppMedia(), sendWhatsAppTemplate(), sendWhatsAppMedia(), sendWhatsAppInteractive(), registerWhatsAppTemplate(). All tokens from process.env via supervisord. |
 | db.js | 186 | **New in v4.** SQLite (`sql.js`) wrapper backing the browser UI's message thread. Exports: insert, getMessagesByConversation, getMessagesSince, getUnreadCount, getThreadSummaries, markConversationRead. See 3.10.2 for schema. |
 | broadcast.js | 26 | **New in v4.** Minimal in-memory pub-sub (`onUIMessage`, `broadcastToUI`) — currently has zero subscribers since the UI uses long-polling, not WebSocket (3.10.1 explains why); kept as the seam for a future real WebSocket upgrade with no other file needing to change. |
-| ui.html | 1131 | **New in v4.** The entire browser CRM frontend — single file, vanilla JS/CSS, no build step, no framework. Served fresh from disk on every `GET /ui` request (no restart needed to edit it). |
+| ui.html | 1194 | **New in v4.** The entire browser CRM frontend — single file, vanilla JS/CSS, no build step, no framework. Served fresh from disk on every `GET /ui` request (no restart needed to edit it). **29 July 2026:** mobile-responsive layout added (3.10.10). |
 
 Extension entry point: ~/.openclaw/workspace/.openclaw/extensions/koolaircon-crm/index.ts
 
-Size: 1995 lines (was ~850 in v3) — the growth is almost entirely the browser UI's REST routes and the `runXCommand` extraction described in 3.10.3. Registers 11 Telegram commands, 2 event hooks, and the HTTP routes listed in 3.10.5, plus the 15-minute runSync timer.
+Size: 2030 lines (was ~850 in v3) — the growth is almost entirely the browser UI's REST routes and the `runXCommand` extraction described in 3.10.3, plus (29 July 2026) Block 5 (3.10.7) and WhatsApp delivery-status webhook logging (3.10.8). Registers 11 Telegram commands, 2 event hooks, and the HTTP routes listed in 3.10.5, plus the 15-minute runSync timer.
 
 3.2 Credentials & IDs
 
@@ -270,13 +280,15 @@ Note: do not share these publicly. Store in a password manager.
 | Service Account Key | /home/ubuntu/.openclaw/workspace/.openclaw/secrets/gsheets-credentials.json |
 | Operator Telegram ID | 126686924 |
 | Telegram Bot | @JKaircon_bot |
-| WhatsApp Phone Number ID | 1148898708312929 (test) |
-| WhatsApp WABA ID | 3874891512807457 (test) |
-| WhatsApp Test Number | +1 (555) 670-8135 |
+| WhatsApp Phone Number ID | **Corrected 29 July 2026:** `1261834007009399` is the real, already-registered production number (WABA display number +65 8875 7334). `1148898708312929`, previously listed here as "test," is dead/legacy and unused anywhere in current code — confirmed via repo-wide grep. `whatsapp.js` still exports the legacy value as `PHONE_NUMBER_ID` (unused) alongside the real, module-private `WHATSAPP_PHONE_NUMBER_ID` actually used by every send function. |
+| WhatsApp WABA ID | See WABA display number above (+65 8875 7334). The previously-listed `3874891512807457` was not re-verified this pass — confirm in WhatsApp Manager before relying on it. |
+| WhatsApp display name | **Rejected by Meta as of 29 July 2026** — "Kool Aircon" violates Meta's Display Name Guidelines (WhatsApp Manager → Phone Numbers shows the rejection banner). Needs a compliant resubmission (matching the registered business/trading name) before Marketing-tier template submission can proceed — see 3.5, 3.7. |
 | Meta Webhook Verify Token | In process.env.WHATSAPP_VERIFY_TOKEN (supervisord) |
 | BOT_TOKEN | In process.env.BOT_TOKEN (supervisord) |
 | WHATSAPP_ACCESS_TOKEN | In process.env.WHATSAPP_ACCESS_TOKEN (supervisord) |
-| UI_PASSWORD | **New in v4.** In process.env.UI_PASSWORD (supervisord) — HTTP Basic Auth password for `/ui` and every `/api/*` route. If unset, those routes return 500 rather than silently allowing access. |
+| UI_PASSWORD | **New in v4.** In process.env.UI_PASSWORD (supervisord) — HTTP Basic Auth password for `/ui` and every `/api/*` route. If unset, those routes return 500 rather than silently allowing access. **Not scoped per-user** — anyone given this password has full read/write access to real customer data and can send messages as the business; there is no read-only or sandboxed mode. |
+
+**Credential rotation reminder (29 July 2026):** `WHATSAPP_ACCESS_TOKEN`, `BOT_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `UI_PASSWORD` were all pasted in plaintext into an AI chat session this same day (while sharing the supervisord config for debugging). Treat all four as exposed and rotate them — update the values, update the `environment=` line in `/tmp/supervisord-openclaw.conf`, restart the gateway — especially before giving `UI_PASSWORD` to anyone new.
 | OpenClaw Host | OVH container via MyClaw — no direct SSH |
 | Gateway restart | supervisorctl -c /tmp/supervisord-openclaw.conf restart openclaw-gateway |
 | ngrok URL (current) | https://flatly-aviator-turf.ngrok-free.dev (changes on restart) — also serves `/ui` |
@@ -302,7 +314,7 @@ getSettings() TTL: 60 seconds. Safe to change 9_Settings without restart.
 
 _zoneDayCache TTL: 60 minutes. Team_Schedule changes propagate within 60 minutes.
 
-fillTemplate(): supports both {{param}} (Meta format) and [Param] (legacy) — backward compatible.
+fillTemplate(): supports both {{param}} (Meta format) and [Param] (legacy) — backward compatible. **29 July 2026:** `{{param}}` matching is now case-insensitive (a template's literal `{{name}}` now matches a vars object's `Name` key) — previously case-sensitive, which meant several live templates rendered the placeholder text verbatim instead of the customer's name. A placeholder with no matching key at all (e.g. `{{review_link}}`, pending a `9_Settings` key — see 3.7) is still left untouched rather than blanked.
 
 Booking page slot enumeration: 30-minute increments within AM/PM blocks. Deduplicated and sorted by startMins.
 
@@ -312,14 +324,15 @@ Browser UI uses long-polling, not WebSocket: `GET /api/updates?since=<ts>` is po
 
 3.4 runSync Timer Blocks
 
-Fires every 15 minutes. Four independent try/catch blocks inside one try/finally that releases syncInFlight:
+Fires every 15 minutes. Five independent try/catch blocks inside one try/finally that releases syncInFlight. **The table below is in actual source-code execution order** — the code's own inline comments number them 1/2/4/5/3 (not 1–5 sequentially); this table resolves that so the order is unambiguous:
 
-| Block | Function | What it does |
-| :-: | :-: | :-: |
-| 1 | syncCalendarToJobs() | Creates Job rows from confirmed calendar events that have no job yet |
-| 2 | detectAndMarkCompletedJobs() | Stamps Completed_At, updates Last_Job_Date, queues POST-D0-A draft |
-| 3 | pollTechnicianSubmissions() | Scans Drive for _SUBMIT_ JSON files, routes fields to sheets via 1_App_Config |
-| 4 | runDailyReminderSweep() | Daily at Sweep_Hour_SGT — generates reminder drafts into Module3_Queue, purges old inbox |
+| Order | Code's own label | Function | What it does |
+| :-: | :-: | :-: | :-: |
+| 1st | Block 1 | syncCalendarToJobs() | Creates Job rows from confirmed calendar events that have no job yet |
+| 2nd | Block 2 | detectAndMarkCompletedJobs() | Stamps Completed_At, updates Last_Job_Date, queues POST-D0-A draft |
+| 3rd | Block 4 | pollTechnicianSubmissions() | Scans Drive for _SUBMIT_ JSON files, routes fields to sheets via 1_App_Config |
+| 4th (new, 29 July 2026) | Block 5 | recomputeContactTotals() | Recomputes Total_Jobs/Total_Spend_SGD per contact from 2_Jobs, writes only changed cells (3.10.7) |
+| 5th (last) | Block 3 | runDailyReminderSweep() | Daily at Sweep_Hour_SGT — generates reminder drafts into Module3_Queue, purges old inbox |
 
 3.5 WhatsApp Integration
 
@@ -345,7 +358,13 @@ sendWhatsAppInteractive(to, body, buttons) — sends reply button or CTA message
 
 registerWhatsAppTemplate(name, bodyText) — submits template to Meta for approval
 
-Template registration status: All 10 templates defined in templates.js. NOT yet submitted to Meta — blocked on live URLs for button links (kool.com.sg/book, /refer, /review).
+Template registration status: All 10 templates defined in templates.js. NOT yet submitted to Meta — blocked on live URLs for button links (kool.com.sg/book, /refer, /review) **and now also blocked on the rejected display name** (below) — Meta ties template submission eligibility to business verification/display-name status.
+
+**Delivery-status webhook logging (added 29 July 2026, 3.10.8).** The webhook handler previously only ever read `payload.entry[0].changes[0].value.messages` (inbound customer text) and silently discarded every other payload shape, including Meta's async delivery-status callbacks (`value.statuses`: sent/delivered/read/failed, with an `errors` array on failure). It now logs each status event as `[whatsapp] status: id=... status=... recipient=... errors=...` — visible in the server log but **not yet correlated back to `5_Message_Log` or persisted anywhere structured**; that's a reasonable next step, not done in this pass.
+
+**WhatsApp display name rejected by Meta (found 29 July 2026).** WhatsApp Manager → Phone Numbers shows: *"Your display name Kool Aircon was rejected... violates WhatsApp's Display Name Guidelines."* Needs a compliant resubmission via the Profile tab (matching the registered/legal business name) before template submission can proceed. Does not appear to block ordinary free-text (Service-tier) sends within an open FEP window — Meta's own Message delivery insights (WhatsApp Manager → Phone Numbers → Insights) showed real sent/delivered Service-tier traffic with $0 charges while the rejection was active.
+
+**Confirmed live incident (29 July 2026) — read together with the Marketing-tier gap noted in 2.4.** Three Module3 reminder drafts were approved from the browser and each returned a real Meta message id (`wamid...`), logged as `Sent` in `5_Message_Log` — but none reached the test phone. Root cause: the last inbound message from that test number was over 24 hours old, so the FEP window was closed; Meta accepted the free-text send at the API layer (no error) but never delivered it. Confirmed fixed for the specific test case by re-sending after the test number sent a fresh "Hi" (reopening the window) — **the underlying architecture gap (2.4: Marketing-tier content sent as free text, not via approved templates) is not fixed**, since it depends on templates that aren't yet approvable (rejected display name, above).
 
 3.6 Technician App Integration
 
@@ -374,7 +393,14 @@ Tech app upload: Technicians need Editor access to the KoolAircon Jobs Drive fol
 
 | Item | Status | Blocked by |
 | :-: | :-: | :-: |
-| Browser CRM UI (`/ui`) | **Built, live — v4.** Not yet end-to-end tested by the operator. | Next task: click through every panel against real data, including a real approve-and-send from the Reminder Queue. |
+| Browser CRM UI (`/ui`) | **Built, live, end-to-end tested — including a real Reminder Queue approve-and-send that confirmed delivery once inside the FEP window.** | None — see the Marketing-tier delivery gap below for the real remaining risk. |
+| Mobile-responsive `ui.html` layout | **Built and deployed 29 July 2026** (3.10.10). | None. |
+| Marketing-tier Module3 reminders sent as free text, not approved templates | **Confirmed live production gap, not fixed** — see 2.4, 3.5. Root cause of a real delivery-failure incident on 2026-07-29. | Meta template approval, which is itself blocked on the display name rejection below. |
+| WhatsApp display name "Kool Aircon" rejected by Meta | Not fixed | Resubmit a compliant name via WhatsApp Manager → Profile (see 3.5). |
+| Module3_Queue L-anchor duplicate-requeue risk | Confirmed live, not fixed | Dedup only checks the current queue, not `5_Message_Log` — see 2.5. Fix: also check `hasReceivedTemplate()` before queueing an L-anchor draft. |
+| Exposed credentials (WHATSAPP_ACCESS_TOKEN, BOT_TOKEN, WHATSAPP_VERIFY_TOKEN, UI_PASSWORD) | Not yet rotated | Pasted into a chat session 29 July 2026 (see 3.2) — rotate before any wider `/ui` sharing. |
+| Test contacts left in production data (KA-0055–KA-0067, "Test ..." names) | Not yet cleaned up | Created during Reminder Queue/delivery testing on 2026-07-29; skews job counts/totals if left in `1_Contacts`. |
+| `{{review_link}}` template placeholder | Intentionally left unfilled | Needs a new `Google_Review_Link` key in `9_Settings`, then wiring into module3.js's `fillTemplate()` calls (not done — deferred per explicit instruction). |
 | module3.js auto-send Contact_ID bug | Known, not fixed | Only matters if Module3_AutoSend is ever set TRUE — see module3.js row in 3.1 and 3.10.4. |
 | End-to-end WhatsApp template test | Not done | Templates not yet approved — doing partial test first |
 | Meta template registration | Deferred | Live URLs needed: kool.com.sg/book, /refer, /review |
@@ -415,33 +441,41 @@ URL_Our_Service vs URL_Our_Services naming inconsistency: old key cleared, stand
 
 3.9 Next Session Starting Point
 
-Immediate priority: end-to-end test the browser CRM UI against real data (thread list, customer edit, calendar/booking panel, and — carefully, since it's a real send — the Reminder Queue approve flow), then continue the pre-existing domain/Meta checklist below.
+Immediate priority (updated 29 July 2026): the browser CRM UI is now end-to-end tested and the mobile layout is live, so the top of the list has shifted to the delivery-reliability gap found this session — that's the thing most likely to silently cost the business real messages if left alone.
 
 Next session checklist:
 
-1. Click through every browser CRM panel against real conversations and confirm nothing silently breaks (no formal test suite exists — this is manual verification).
+1. **Fix the WhatsApp display name rejection** — resubmit a compliant name via WhatsApp Manager → Profile. Blocks everything below.
 
-2. Decide whether to fix the module3.js auto-send Contact_ID bug now or leave it (it's dormant while Module3_AutoSend=FALSE).
+2. **Get the 10 templates approved by Meta** (blocked on #1), then **switch `module3.js`'s Marketing-tier sends (`LEAD-F1-A`, `LEAD-F2-A`, `POST-REVIEW-A`, `POST-REFERRAL-A`, `REM-1-A`–`REM-5-A`) from `sendWhatsApp()` to `sendWhatsAppTemplate()`** — this is the actual fix for the 2026-07-29 delivery-failure incident, not just a one-off retest with the window reopened.
 
-3. Buy kool.com.sg (or koolaircon.com)
+3. **Fix the Module3_Queue L-anchor duplicate-requeue risk** — have the sweep also check `hasReceivedTemplate()` (5_Message_Log) before queueing an L-anchor draft, not just current queue state.
 
-4. Point DNS to Cloudflare
+4. **Rotate WHATSAPP_ACCESS_TOKEN, BOT_TOKEN, WHATSAPP_VERIFY_TOKEN, UI_PASSWORD** (exposed in a chat session 29 July 2026) before sharing `/ui` access with anyone new.
 
-5. Set up Cloudflare Tunnel → api.kool.com.sg → OVH server port 18789 (this also fixes `/ui`'s URL instability — no more re-sharing a new link after every ngrok restart)
+5. **Clean up test data**: delete the test contacts (KA-0055–KA-0067) from `1_Contacts` and confirm no stray `LEAD-F1-A`/other queue entries remain from testing.
 
-6. Update NEXT_PUBLIC_OPENCLAW_URL in Vercel to new stable URL
+6. Add a `Google_Review_Link` key to `9_Settings` and wire `{{review_link}}` into module3.js's `fillTemplate()` calls once ready.
 
-7. Update webhook URL in Meta console
+7. Decide whether to fix the module3.js auto-send Contact_ID bug now or leave it (it's dormant while Module3_AutoSend=FALSE).
 
-8. Set up redirects: kool.com.sg/book, /refer, /review, /report
+8. Buy kool.com.sg (or koolaircon.com)
 
-9. Update URL_* settings in 9_Settings
+9. Point DNS to Cloudflare
 
-10. Submit all 10 templates to Meta via registerWhatsAppTemplate()
+10. Set up Cloudflare Tunnel → api.kool.com.sg → OVH server port 18789 (this also fixes `/ui`'s URL instability — no more re-sharing a new link after every ngrok restart)
 
-11. Run full end-to-end WhatsApp test
+11. Update NEXT_PUBLIC_OPENCLAW_URL in Vercel to new stable URL
 
-12. Shadow technicians → update 1_App_Config and rebuild tech app
+12. Update webhook URL in Meta console
+
+13. Set up redirects: kool.com.sg/book, /refer, /review, /report
+
+14. Update URL_* settings in 9_Settings
+
+15. Run full end-to-end WhatsApp test (once templates are approved and switched over)
+
+16. Shadow technicians → update 1_App_Config and rebuild tech app
 
 Part 3.10 — Browser CRM UI Technical Reference (new in v4)
 
@@ -499,3 +533,30 @@ While fixing this, `handleQueueApproval`'s entry lookup also moved from a straig
 3.10.6 Deploy pattern and its sharp edge
 
 Every change lands via a hash-gated whole-file-replace script: compute sha256 of the new file and an expected pre-change baseline hash, compare against the live file before writing — `[SKIP]` if already applied, `[ABORT]` if the live file matches neither (drift), backup-then-write-then-reverify if it matches the expected baseline. This has repeatedly caught real drift between what git/the Shared Drive thinks is live and what's actually running — see the `crm.js`/`sheets.js` baseline mismatch during the v4 deploy (module3.js's `force`-parameter gap on `handleSendPhotosCommand` and a stray trailing blank line, respectively — both harmless once diffed directly against the live file, but the deploy script correctly refused to apply blind). **Lesson, repeated from v3: a git commit — or even a Shared Drive upload — being "reconciled" does not mean it was actually deployed. Confirm hashes against the live file, every time, before assuming a baseline.**
+
+**29 July 2026 — this happened again, twice, in one session, and both times were false alarms once diffed.** (1) `module3.js`'s expected baseline hash didn't match the live file — investigation showed the *only* real difference was two separator comments one dash character shorter and a missing trailing blank line (an artifact of round-tripping the file through a base64 Drive upload/decode), plus the two intended `customer_phone` additions — safe to apply directly once diffed, no hash-gate needed for that specific case. (2) A live `module3.js` bug (`daysSinceCreated is not defined` — a leftover variable name from a different function, copy-pasted into a log line inside `runDailyReminderSweep`'s L-anchor loop where only `hoursSinceCreated` is actually in scope) was hotfixed directly on the server with `sed`, live, before this doc's fix could be prepared and deployed through the normal pipeline — then reconciled back into this repo afterward. **Reinforces the same lesson**: the live file is the only source of truth; git/Drive is downstream of it, not the other way around, and a hash mismatch is a signal to diff, not necessarily to panic or force.
+
+3.10.7 recomputeContactTotals() (new, 29 July 2026)
+
+Replaces a dragged-down spreadsheet formula in `1_Contacts`' `Total_Jobs`/`Total_Spend_SGD` columns that was silently inflating the sheet to 1000+ rows (a formula's mere presence in a cell defeated the "first truly empty row in column A" scan `appendRow()` uses elsewhere to find where to write a new contact). `sheets.js`'s new `recomputeContactTotals()` reads all of `2_Jobs` and `1_Contacts` once, sums job count and `Amount_SGD` per `Contact_ID` in memory, and batch-writes only the cells whose value actually changed. Runs as Block 5 of the 15-minute `runSync` timer (3.4). **Prerequisite the operator must do manually, once**: clear the existing formula out of those two columns in the Google Sheet UI — the code does not (and should not) overwrite a formula-bearing cell automatically, since Sheets re-evaluates formulas on every recalculation regardless of what the API just wrote.
+
+3.10.8 WhatsApp delivery-status webhook logging (new, 29 July 2026)
+
+Meta's WhatsApp webhook multiplexes two unrelated payload shapes onto the same `POST /webhook/whatsapp`: inbound customer messages (`value.messages`) and outbound delivery-status callbacks (`value.statuses` — `sent`/`delivered`/`read`/`failed`, with an `errors` array when `failed`). The handler previously only ever read `messages` and treated everything else as a no-op (`"webhook POST received (no actionable message)"`). It now also parses `statuses` and logs `[whatsapp] status: id=<wamid> status=<...> recipient=<...> errors=<...>` for each one — purely additive, no change to the existing inbound-message handling. This was the direct diagnostic tool that confirmed the 2026-07-29 delivery incident (3.5): the webhook was receiving status callbacks the whole time, just discarding them silently. **Not yet done**: correlating a status event back to its `5_Message_Log` row (would need the `wamid` returned by `sendWhatsApp()` to be stored against the log row at send time — it currently isn't).
+
+3.10.9 fillTemplate() case-insensitivity + customer_phone var (new, 29 July 2026)
+
+Two related template-rendering bugs found while investigating why a live reminder rendered as literal `"Hi {{name}}, hope the aircon is running well."` instead of the customer's name:
+
+- **Case sensitivity**: `fillTemplate(text, vars)` used to do `text.replaceAll('{{' + key + '}}', value)` for each key in `vars` — an exact-case string replace. Every C-anchor/L-anchor draft passes `Name` (capital N) as the vars key, but the actual template text in `4_Templates` uses lowercase `{{name}}`, so the two never matched and the placeholder went out unfilled. Fixed by matching `{{key}}` via a single case-insensitive regex pass (`/\{\{\s*(\w+)\s*\}\}/g`, lower-cased on both sides before comparing) — a placeholder with no matching key at all (case-insensitively) is left untouched, not blanked, so an unwired placeholder like `{{review_link}}` still visibly signals "this isn't wired up yet" rather than silently disappearing. The legacy `[Key]` bracket form is untouched — still an exact-case literal replace, matching its pre-existing behavior.
+- **customer_phone**: at least one live template references `{{customer_phone}}`, but neither of `module3.js`'s two draft-generation loops (C-anchor, L-anchor) ever passed a `customer_phone` key — only `Phone`. Both loops now also pass `customer_phone: contact.Phone || ''` alongside the existing `Phone` key.
+- **review_link deliberately not fixed** in this pass — no `{{review_link}}` value exists yet anywhere in the system. Confirmed with the operator: this should come from a new `9_Settings` key (e.g. `Google_Review_Link`) once the business has a real Google review link to point to, not be hardcoded into module3.js. Tracked in 3.7/3.9.
+
+3.10.10 Mobile-responsive layout (new, 29 July 2026)
+
+Added directly to `ui.html` (built in a separate session to avoid overloading this one, then reconciled and deployed through the same hash-gated pipeline as everything else — see 3.10.6). A single `@media (max-width: 768px)` block plus a handful of new small elements (`#thread-help-btn`, `#chat-back-btn`, `#cal-close-btn`, `#queue-close-btn`) that only render at mobile widths:
+
+- Below 768px, the thread list and chat panel become full-width single-screen views toggled by a `chat-active` class on `<body>` — opening a conversation hides the thread list and shows the chat panel; a new back button (←) in the chat header reverses that.
+- The calendar and Reminder Queue panels become full-screen overlays (`position: fixed`, full viewport) instead of fixed-width side columns, each with a close button (✕).
+- Form inputs are bumped to `font-size: 16px` at mobile widths specifically to stop iOS Safari's automatic zoom-on-focus behavior.
+- No backend/route changes — purely a CSS/HTML/JS addition to the existing single-file frontend. No gateway restart needed to deploy it, since `GET /ui` already reads `ui.html` fresh from disk on every request (3.1).
