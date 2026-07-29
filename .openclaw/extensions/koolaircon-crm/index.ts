@@ -802,6 +802,26 @@ export default definePluginEntry({
               return;
             }
 
+            // Delivery-status callbacks (sent/delivered/read/failed) arrive on the same
+            // webhook as inbound messages, in a separate `statuses` array -- log them so a
+            // "the API accepted it but nothing arrived" case (e.g. a closed 24h customer
+            // service window) is visible in the server log instead of silently discarded.
+            try {
+              const statuses = payload?.entry?.[0]?.changes?.[0]?.value?.statuses;
+              if (Array.isArray(statuses)) {
+                for (const st of statuses) {
+                  const errPart = Array.isArray(st?.errors) && st.errors.length > 0
+                    ? ` errors=${JSON.stringify(st.errors)}`
+                    : '';
+                  api.logger.info(
+                    `[whatsapp] status: id=${st?.id} status=${st?.status} recipient=${st?.recipient_id}${errPart}`
+                  );
+                }
+              }
+            } catch (err) {
+              api.logger.error(`[whatsapp] status-parse error: ${err instanceof Error ? err.message : String(err)}`);
+            }
+
             // Defensively extract sender + text — not all POSTs are user messages
             // (Meta also sends delivery receipts, read receipts, status updates, etc.)
             let from: string | undefined;
